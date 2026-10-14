@@ -102,8 +102,9 @@ def receive_secure_message(connection):
     return sender, content
 
 
+
 def start_peer_a():
-    """Listen for Peer B and authenticate its message."""
+    """Listen for and authenticate multiple peer connections."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((HOST, PEER_A_PORT))
@@ -113,31 +114,33 @@ def start_peer_a():
 
         # Register only after the listening socket is ready.
         register_peer("Peer A", PEER_A_PORT)
-        print("Waiting for a peer connection...")
 
-        connection, address = server.accept()
+        print("Waiting for peer connections...")
 
-        with connection:
-            print(f"Connection received from {address}")
+        # Keep accepting connections until the user stops Peer A.
+        while True:
+            connection, address = server.accept()
 
-            try:
-                sender, content = receive_secure_message(connection)
-            except (ValueError, UnicodeDecodeError):
-                print("Rejected: invalid message or HMAC.")
-                return
+            with connection:
+                print(f"\nConnection received from {address}")
 
-            print(f"Authenticated message from {sender}: {content}")
+                try:
+                    sender, content = receive_secure_message(connection)
+                except (ValueError, UnicodeDecodeError) as error:
+                    print(f"Rejected: invalid message or HMAC. {error}")
+                    continue
 
-            reply = "Message authenticated successfully!"
-            reply_bytes = canonical_message("Peer A", reply)
-            reply_tag = calculate_hmac(reply_bytes, SECRET_KEY)
+                print(f"Authenticated message from {sender}: {content}")
 
-            connection.sendall(
-                encode_secure_message("Peer A", reply, reply_tag)
-            )
+                reply = "Message authenticated successfully!"
+                reply_bytes = canonical_message("Peer A", reply)
+                reply_tag = calculate_hmac(reply_bytes, SECRET_KEY)
 
-            print("Authenticated reply sent to Peer B.")
+                connection.sendall(
+                    encode_secure_message("Peer A", reply, reply_tag)
+                )
 
+                print("Authenticated reply sent to Peer B.")
 
 def start_peer_b():
     """Register, discover Peer A, and connect to it."""
