@@ -2,6 +2,7 @@
 import json
 import socket
 import sys
+import time
 
 from src.message import (
     canonical_message,
@@ -183,9 +184,13 @@ def start_peer_b():
         message_bytes = canonical_message("Peer B", message)
         tag = calculate_hmac(message_bytes, SECRET_KEY)
 
+        
         with socket.create_connection(
             (target_host, target_port), timeout=5
         ) as connection:
+            # Start measuring immediately before sending the message.
+            start_time = time.perf_counter()
+
             connection.sendall(
                 encode_secure_message("Peer B", message, tag)
             )
@@ -196,7 +201,12 @@ def start_peer_b():
                 print("Rejected: invalid reply or HMAC.")
                 return
 
+            # Stop after receiving and verifying the reply.
+            end_time = time.perf_counter()
+            rtt_ms = (end_time - start_time) * 1000
+
             print(f"Verified reply from {sender}: {content}")
+            print(f"Round-trip time (RTT): {rtt_ms:.3f} ms")
 
 
 if __name__ == "__main__":
