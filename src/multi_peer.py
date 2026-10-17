@@ -176,38 +176,60 @@ def start_peer_b():
             print("Bootstrap returned an invalid Peer A address.")
             return
 
-        print(
-            f"Discovered Peer A at {target_host}:{target_port}"
-        )
-
-        message = input("Enter a message to send to Peer A: ")
-        message_bytes = canonical_message("Peer B", message)
-        tag = calculate_hmac(message_bytes, SECRET_KEY)
-
         
-        with socket.create_connection(
-            (target_host, target_port), timeout=5
-        ) as connection:
-            # Start measuring immediately before sending the message.
-            start_time = time.perf_counter()
+        message = input("Enter a message to send to Peer A: ")
+        number_of_tests = 10
+        rtt_results = []
 
-            connection.sendall(
-                encode_secure_message("Peer B", message, tag)
-            )
+        for test_number in range(1, number_of_tests + 1):
+            test_message = f"{message} (test {test_number})"
+            message_bytes = canonical_message("Peer B", test_message)
+            tag = calculate_hmac(message_bytes, SECRET_KEY)
 
             try:
-                sender, content = receive_secure_message(connection)
-            except (ValueError, UnicodeDecodeError):
-                print("Rejected: invalid reply or HMAC.")
-                return
+                with socket.create_connection(
+                    (target_host, target_port), timeout=5
+                ) as connection:
+                    start_time = time.perf_counter()
 
-            # Stop after receiving and verifying the reply.
-            end_time = time.perf_counter()
-            rtt_ms = (end_time - start_time) * 1000
+                    connection.sendall(
+                        encode_secure_message(
+                            "Peer B", test_message, tag
+                        )
+                    )
 
-            print(f"Verified reply from {sender}: {content}")
-            print(f"Round-trip time (RTT): {rtt_ms:.3f} ms")
+                    sender, content = receive_secure_message(
+                        connection
+                    )
 
+                    end_time = time.perf_counter()
+
+                if sender != "Peer A":
+                    print("Rejected: unexpected reply sender.")
+                    continue
+
+                rtt_ms = (end_time - start_time) * 1000
+                rtt_results.append(rtt_ms)
+
+                print(
+                    f"Test {test_number}: "
+                    f"Verified reply from {sender}: {content}"
+                )
+                print(f"  RTT: {rtt_ms:.3f} ms")
+
+            except (OSError, ValueError, UnicodeDecodeError) as error:
+                print(f"Test {test_number} failed: {error}")
+
+        if rtt_results:
+            average_rtt = sum(rtt_results) / len(rtt_results)
+
+            print("\n--- RTT Performance Summary ---")
+            print(f"Successful tests: {len(rtt_results)}/{number_of_tests}")
+            print(f"Average RTT: {average_rtt:.3f} ms")
+            print(f"Minimum RTT: {min(rtt_results):.3f} ms")
+            print(f"Maximum RTT: {max(rtt_results):.3f} ms")
+        else:
+            print("No successful RTT measurements were recorded.")
 
 if __name__ == "__main__":
     if len(sys.argv) != 2 or sys.argv[1].upper() not in {"A", "B"}:
