@@ -3,6 +3,8 @@ import json
 import socket
 import sys
 import time
+import csv
+import statistics
 
 from src.message import (
     canonical_message,
@@ -180,6 +182,11 @@ def start_peer_b():
         message = input("Enter a message to send to Peer A: ")
         number_of_tests = 10
         rtt_results = []
+        csv_file = "rtt_results.csv"
+
+        with open(csv_file, "w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow(["Test Number", "Message", "RTT (ms)", "Status"])
 
         for test_number in range(1, number_of_tests + 1):
             test_message = f"{message} (test {test_number})"
@@ -210,6 +217,14 @@ def start_peer_b():
 
                 rtt_ms = (end_time - start_time) * 1000
                 rtt_results.append(rtt_ms)
+                with open(csv_file, "a", newline="", encoding="utf-8") as file:
+                    writer = csv.writer(file)
+                    writer.writerow([
+                        test_number,
+                        test_message,
+                        f"{rtt_ms:.3f}",
+                        "Success"
+                    ])
 
                 print(
                     f"Test {test_number}: "
@@ -220,14 +235,27 @@ def start_peer_b():
             except (OSError, ValueError, UnicodeDecodeError) as error:
                 print(f"Test {test_number} failed: {error}")
 
+                with open(csv_file, "a", newline="", encoding="utf-8") as file:
+                    writer = csv.writer(file)
+                    writer.writerow([
+                        test_number,
+                        test_message,
+                        "",
+                        f"Failed: {error}"
+                    ])
+
         if rtt_results:
             average_rtt = sum(rtt_results) / len(rtt_results)
+            median_rtt = statistics.median(rtt_results)
+            std_dev_rtt = statistics.pstdev(rtt_results)
 
             print("\n--- RTT Performance Summary ---")
             print(f"Successful tests: {len(rtt_results)}/{number_of_tests}")
             print(f"Average RTT: {average_rtt:.3f} ms")
             print(f"Minimum RTT: {min(rtt_results):.3f} ms")
             print(f"Maximum RTT: {max(rtt_results):.3f} ms")
+            print(f"Median RTT: {median_rtt:.3f} ms")
+            print(f"Population standard deviation: {std_dev_rtt:.3f} ms")
         else:
             print("No successful RTT measurements were recorded.")
 
