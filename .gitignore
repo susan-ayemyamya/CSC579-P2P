@@ -2,3 +2,5 @@ _pycache_/
 *.py[cod]
 .venv/
 .env
+
+src/*.bak
