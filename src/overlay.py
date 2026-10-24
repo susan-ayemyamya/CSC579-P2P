@@ -1,4 +1,5 @@
 import socket
+import os
 
 from src.message import (
     canonical_message,
@@ -7,7 +8,7 @@ from src.message import (
 )
 from src.security import calculate_hmac, verify_hmac
 
-HOST = "127.0.0.1"
+HOST = os.getenv("P2P_PEER_HOST", "127.0.0.1")
 PORT = 5000
 
 # Must match the demonstration key in peer.py.

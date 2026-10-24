@@ -1,0 +1,26 @@
+﻿Phase 4: Cross-Machine Peer-to-Peer Communication Test
+
+Environment:
+- Peer A: Windows laptop, 192.168.1.101
+- Peer B: Kali Linux VM, 192.168.1.206
+- Port: 5000
+
+Test Procedure:
+1. Started Peer A on Windows listening on 0.0.0.0:5000.
+2. Configured Peer B to connect to Windows at 192.168.1.101.
+3. Sent the message "Hello from Kali Linux!" from Peer B to Peer A.
+
+Results:
+- Windows accepted a connection from 192.168.1.206.
+- Windows received the message from Peer B.
+- Windows confirmed: Authenticated message from Peer B: Hello from Kali Linux!
+- Kali received: Verified reply from Peer A: Message authenticated successfully!
+
+Outcome: SUCCESS
+
+Regression Testing:
+Command: python -m unittest discover -s tests -v
+Result: All 8 tests passed.
+
+Conclusion:
+Cross-machine communication between Windows and Kali Linux was successful. All 8 existing automated tests passed, and the original localhost defaults remain unchanged when the environment variables are not set.
