@@ -5,6 +5,7 @@ import sys
 import time
 import csv
 import statistics
+import os
 
 from src.message import (
     canonical_message,
@@ -13,7 +14,15 @@ from src.message import (
 )
 from src.security import calculate_hmac, verify_hmac
 
-HOST = "127.0.0.1"
+# Network configuration
+HOST = os.getenv("P2P_BIND_HOST", "127.0.0.1")
+BOOTSTRAP_HOST = os.getenv(
+    "P2P_BOOTSTRAP_HOST", "127.0.0.1"
+)
+ADVERTISED_HOST = os.getenv(
+    "P2P_ADVERTISED_HOST", HOST
+)
+
 BOOTSTRAP_PORT = 6000
 PEER_A_PORT = 5000
 PEER_B_PORT = 5001
@@ -26,7 +35,7 @@ SECRET_KEY = b"demo-shared-key-change-later"
 def bootstrap_request(request):
     """Send one JSON request to the bootstrap server."""
     with socket.create_connection(
-        (HOST, BOOTSTRAP_PORT), timeout=5
+        (BOOTSTRAP_HOST, BOOTSTRAP_PORT), timeout=5
     ) as connection:
         connection.sendall(
             json.dumps(request).encode("utf-8") + b"\n"
@@ -60,11 +69,11 @@ def register_peer(peer_id, port):
     response = bootstrap_request({
         "action": "register",
         "peer_id": peer_id,
-        "host": HOST,
+        "host": ADVERTISED_HOST,
         "port": port,
     })
 
-    print(f"{peer_id} registered at {HOST}:{port}")
+    print(f"{peer_id} registered at {ADVERTISED_HOST}:{port}")
     return response
 
 

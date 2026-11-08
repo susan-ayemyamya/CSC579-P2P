@@ -2,10 +2,11 @@
 import json
 import socket
 import threading
+import os
 
 from src.peer_directory import PeerDirectory
 
-HOST = "127.0.0.1"
+HOST = os.getenv("P2P_BOOTSTRAP_BIND", "127.0.0.1")
 PORT = 6000
 MAX_MESSAGE_SIZE = 4096
 
