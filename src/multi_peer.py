@@ -191,7 +191,7 @@ def start_peer_b():
         message = input("Enter a message to send to Peer A: ")
         number_of_tests = 10
         rtt_results = []
-        csv_file = "rtt_results.csv"
+        csv_file = os.getenv("P2P_RTT_CSV", "rtt_results.csv")
 
         with open(csv_file, "w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
