@@ -1,0 +1,11 @@
+Test Number,Message,RTT (ms),Status
+1,Hello from Kali cross-machine RTT test (test 1),1.637,Success
+2,Hello from Kali cross-machine RTT test (test 2),1.568,Success
+3,Hello from Kali cross-machine RTT test (test 3),1.541,Success
+4,Hello from Kali cross-machine RTT test (test 4),1.060,Success
+5,Hello from Kali cross-machine RTT test (test 5),8.867,Success
+6,Hello from Kali cross-machine RTT test (test 6),0.843,Success
+7,Hello from Kali cross-machine RTT test (test 7),0.807,Success
+8,Hello from Kali cross-machine RTT test (test 8),0.856,Success
+9,Hello from Kali cross-machine RTT test (test 9),0.820,Success
+10,Hello from Kali cross-machine RTT test (test 10),0.989,Success
