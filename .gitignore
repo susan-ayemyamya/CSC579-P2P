@@ -1,6 +1,7 @@
-_pycache_/
+__pycache__/
 *.py[cod]
 .venv/
 .env
 
 src/*.bak
+received_files/
