@@ -1,3 +1,12 @@
+'''
+Modifications (branch overlay-improvements)
+   1. SECRET_KEY now comes from src/config.py instead of a local copy.
+      Why: the key was copied in four files. Keeping it in one place
+      means Step 4 (per-peer keys) only has to change config.py.
+
+Everything else in this file is unchanged.
+
+'''
 
 import os
 import hashlib
@@ -5,10 +14,11 @@ import json
 import socket
 
 from src.security import calculate_hmac, verify_hmac
+from src import config
 
 CHUNK_SIZE = 4096
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-SECRET_KEY = b"demo-shared-key-change-later"
+SECRET_KEY = config.SECRET_KEY
 
 def calculate_file_hash(file_path):
     """Calculate the SHA-256 hash of a file."""

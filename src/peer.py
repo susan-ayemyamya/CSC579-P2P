@@ -1,3 +1,11 @@
+# --- Modifications (branch overlay-improvements) ---
+#   1. SECRET_KEY now comes from src/config.py instead of a local copy.
+#      Why: the key was copied in four files. Keeping it in one place
+#      means Step 4 (per-peer keys) only has to change config.py.
+#
+#   Everything else in this file is unchanged.
+# ----------------------------------------------------
+
 import socket
 import os
 
@@ -7,12 +15,13 @@ from src.message import (
     decode_secure_message,
 )
 from src.security import calculate_hmac, verify_hmac
+from src import config
 
 HOST = os.getenv("P2P_HOST", "127.0.0.1")
 PORT = 5000
 
 # Demonstration key only; both peers must use the same key.
-SECRET_KEY = b"demo-shared-key-change-later"
+SECRET_KEY = config.SECRET_KEY
 
 
 def start_peer():
