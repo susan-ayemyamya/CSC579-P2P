@@ -25,6 +25,14 @@ Modifications (branch overlay-improvements)
       Why: before, anyone could join the overlay under any name. This
       is the join control (TruChord's gateway check before joining).
 
+   7. (branch security-monitor) New 'report' action: a trusted peer can
+      report a neighbour it has quarantined (signed and fresh). Reported
+      peers are marked "quarantined" in every peer list, so senders
+      route around them. Rejected registrations are also recorded by a
+      SecurityMonitor, which raises alerts for repeated attempts.
+      Why: one peer detecting an attacker is not enough; the whole
+      overlay must stop sending traffic through it (response).
+
 '''
 import json
 import socket
@@ -34,6 +42,7 @@ from src import config
 from src.identity import AuthenticationError, load_trust_store, verify_request
 from src.peer_directory import PeerDirectory
 from src.replay import ReplayError, ReplayGuard
+from src.monitor import SecurityMonitor, alert_log_path
 
 HOST = config.BOOTSTRAP_BIND
 PORT = config.BOOTSTRAP_PORT
@@ -54,6 +63,15 @@ class BootstrapServer:
         self.trust_store = load_trust_store(keys_dir)
         self.replay_guard = ReplayGuard()
 
+        # Quarantined peers: suspect -> set of peers that reported it.
+        self.reports = {}
+        self.quarantined = set()
+
+        # Watches rejected registrations (alerts for repeated attempts).
+        self.monitor = SecurityMonitor(
+            "Bootstrap", alert_log=alert_log_path("Bootstrap"), verbose=verbose
+        )
+
         self._server = None
         self._running = threading.Event()
 
@@ -68,6 +86,43 @@ class BootstrapServer:
     def _authenticate_registration(self, request):
         verify_request(request, self.trust_store)
         self.replay_guard.check(request.get("freshness"))
+
+    # Add the "quarantined" flag to a list of peer records.
+    def _with_flags(self, peers):
+        for peer in peers:
+            peer["quarantined"] = peer["peer_id"] in self.quarantined
+        return peers
+
+    # Handle a signed report from a peer about a neighbour it quarantined.
+    #   1. Check the report is signed by a trusted peer and is fresh.
+    #   2. Remember who reported whom.
+    #   3. With enough reports, mark the suspect as quarantined.
+    def _handle_report(self, request, address):
+        try:
+            self._authenticate_registration(request)
+        except (AuthenticationError, ReplayError) as error:
+            return {"status": "error", "message": f"Unauthorized report: {error}"}
+
+        reporter = request.get("peer_id")
+        suspect = request.get("suspect")
+
+        if not isinstance(suspect, str) or not suspect.strip() or suspect == reporter:
+            raise ValueError("Invalid suspect")
+
+        with self.directory_lock:
+            self.reports.setdefault(suspect, set()).add(reporter)
+            if len(self.reports[suspect]) >= config.REPORTS_TO_QUARANTINE:
+                newly = suspect not in self.quarantined
+                self.quarantined.add(suspect)
+            else:
+                newly = False
+
+        self.log(f"{reporter} reported {suspect} ({request.get('reason')})")
+        if newly:
+            self.monitor._alert(f"{suspect} is now quarantined for the whole overlay "
+                                f"(reported by {reporter})")
+
+        return {"status": "ok"}
 
     # Apply one bootstrap request and return the response.
     def process_request(self, request, address=None):
@@ -89,6 +144,8 @@ class BootstrapServer:
                 self._authenticate_registration(request)
             except (AuthenticationError, ReplayError) as error:
                 self.log(f"Rejected registration of {peer_id} from {address}: {error}")
+                source = f"ip:{address[0]}" if address else "ip:unknown"
+                self.monitor.record(source, "unauthorized_join", f"claimed to be {peer_id}")
                 return {"status": "error", "message": f"Unauthorized peer: {error}"}
 
             with self.directory_lock:
@@ -99,23 +156,26 @@ class BootstrapServer:
                     request.get("file_port"),
                     request.get("neighbours"),
                 )
-                peers = self.directory.get_peers(exclude_peer_id=peer_id)
+                peers = self._with_flags(self.directory.get_peers(exclude_peer_id=peer_id))
 
             self.log(f"Registered {peer_id} from {address}")
             return {"status": "ok", "peers": peers}
 
         if action == "discover":
             with self.directory_lock:
-                peers = self.directory.get_peers(exclude_peer_id=peer_id)
+                peers = self._with_flags(self.directory.get_peers(exclude_peer_id=peer_id))
 
             self.log(f"Discovery request from {peer_id}")
             return {"status": "ok", "peers": peers}
 
         if action == "topology":
             with self.directory_lock:
-                peers = self.directory.get_peers()
+                peers = self._with_flags(self.directory.get_peers())
 
             return {"status": "ok", "peers": peers}
+
+        if action == "report":
+            return self._handle_report(request, address)
 
         return {"status": "error", "message": "Unknown action"}
 

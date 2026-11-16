@@ -258,8 +258,8 @@ class TestLiveEncryption(unittest.TestCase):
         peer_b = cls.peers["B"]
         original = peer_b.receive_routed_message
 
-        def spy(connection):
-            fields = original(connection)
+        def spy(connection, *args):
+            fields = original(connection, *args)
             cls.seen_by_b.append(fields[2])
             return fields
 

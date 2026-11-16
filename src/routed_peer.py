@@ -77,6 +77,17 @@ Modifications (branch overlay-improvements) ---
        network) could read the content. Now hops forward ciphertext
        they cannot read.
 
+   15. (branch security-monitor) Every peer runs a SecurityMonitor. Failed
+       HMACs, wrong signatures, replays, undecryptable content, malformed
+       data and floods lower the trust of the neighbour that delivered the
+       message (or of the sending IP address if no peer can be linked).
+       Below 0.6 that neighbour is quarantined: its messages are dropped,
+       nothing is forwarded to it, an alert is written, and it is reported
+       to the bootstrap server so all senders route around it.
+       Why: the checks of Steps 3-5 stopped single bad messages, but an
+       attacker could keep trying forever. The monitor detects repeated
+       misbehaviour and responds to it (proposal: detection and response).
+
 '''
 
 import argparse
@@ -99,7 +110,14 @@ from src.message import (
 from src.security import calculate_hmac, verify_hmac
 from src.replay import ReplayGuard, ReplayError, new_freshness
 from src.identity import load_identity, load_trust_store, sign_request
-from src.encryption import decrypt_content, encrypt_content, message_context
+from src.encryption import (
+    DecryptionError,
+    decrypt_content,
+    encrypt_content,
+    message_context,
+)
+from src.identity import AuthenticationError
+from src.monitor import SecurityMonitor, alert_log_path
 from src.routing import build_graph, build_routing_table, shortest_path
 from src.filesharing import receive_file, send_file
 
@@ -248,6 +266,7 @@ class RoutedPeer:
         received_folder=None,
         verbose=True,
         keys_dir=None,
+        monitor=None,
     ):
         if not isinstance(peer_id, str) or not peer_id.strip():
             raise ValueError("Unknown peer ID")
@@ -291,6 +310,13 @@ class RoutedPeer:
         # This peer's own private key and the trusted public keys.
         self.identity = load_identity(peer_id, keys_dir)
         self.trust_store = load_trust_store(keys_dir)
+
+        # Watches for attacks and quarantines misbehaving neighbours.
+        self.monitor = monitor or SecurityMonitor(
+            peer_id, alert_log=alert_log_path(peer_id), verbose=verbose
+        )
+        if self.monitor.on_quarantine is None:
+            self.monitor.on_quarantine = self.report_quarantine
 
         self._running = threading.Event()
         self._servers = []
@@ -382,7 +408,13 @@ class RoutedPeer:
 
     # Receive and authenticate one routed message, then check that it is
     # fresh (not replayed, not too old) before it is processed.
-    def receive_routed_message(self, connection):
+    def receive_routed_message(self, connection, address=None):
+        ip_source = self.ip_source(address)
+
+        # A quarantined address (other than this computer) is cut off.
+        if self.monitor.is_quarantined(ip_source) and not self._is_local(address):
+            raise ValueError(f"Dropped: {ip_source} is quarantined")
+
         with connection.makefile("rb") as stream:
             data = stream.readline(MAX_MESSAGE_SIZE + 1)
 
@@ -391,30 +423,101 @@ class RoutedPeer:
             or len(data) > MAX_MESSAGE_SIZE
             or not data.endswith(b"\n")
         ):
+            self.monitor.record(ip_source, "malformed", "invalid or oversized message")
             raise ValueError("Invalid or oversized message")
 
-        (
-            sender,
-            destination,
-            content,
-            route,
-            tag,
-            original_bytes,
-            freshness,
-            signature,
-        ) = decode_secure_routed_message(data[:-1], with_freshness=True)
+        try:
+            (
+                sender,
+                destination,
+                content,
+                route,
+                tag,
+                original_bytes,
+                freshness,
+                signature,
+            ) = decode_secure_routed_message(data[:-1], with_freshness=True)
+        except (ValueError, TypeError, UnicodeDecodeError) as error:
+            self.monitor.record(ip_source, "malformed", str(error))
+            raise
 
+        # Without the shared key nobody can be identified: blame the address.
         if not verify_hmac(original_bytes, SECRET_KEY, tag):
+            self.monitor.record(ip_source, "bad_hmac")
             raise ValueError("HMAC verification failed")
 
+        # From here on, the neighbour that delivered the message is known.
+        source = self.message_source(route, ip_source)
+
+        if self.monitor.is_quarantined(source):
+            raise ValueError(f"Dropped: {source} is quarantined")
+
+        # Count the message for flood detection (3-sigma rule).
+        self.monitor.observe(source)
+
         # The message must be signed by the peer named as its sender.
-        self.trust_store.verify(sender, original_bytes, signature)
+        try:
+            self.trust_store.verify(sender, original_bytes, signature)
+        except AuthenticationError as error:
+            self.monitor.record(source, "bad_signature", str(error))
+            raise
 
         # Check freshness only after the HMAC passed, so forged messages
         # cannot fill the nonce memory.
-        self.replay_guard.check(freshness)
+        try:
+            self.replay_guard.check(freshness)
+        except ReplayError as error:
+            self.monitor.record(source, "replay", str(error))
+            raise
 
         return sender, destination, content, route, tag, freshness, signature
+
+    # ------------------------------------------------------------
+    # Security monitor helpers
+    # ------------------------------------------------------------
+
+    # Name used by the monitor for a network address, e.g. "ip:10.0.0.5".
+    @staticmethod
+    def ip_source(address):
+        return f"ip:{address[0]}" if address else "ip:unknown"
+
+    # Is the address this computer? Such an address is never cut off,
+    # because all peers of a one-machine demo share it.
+    @staticmethod
+    def _is_local(address):
+        return bool(address) and address[0] in ("127.0.0.1", "::1", "localhost")
+
+    # The neighbour that delivered a message: the peer just before this
+    # one in the route. A message that starts here comes from this
+    # peer's own client, so the address is used instead.
+    def message_source(self, route, ip_source):
+        if isinstance(route, list) and self.peer_id in route:
+            index = route.index(self.peer_id)
+            if index > 0:
+                return route[index - 1]
+        return ip_source
+
+    # Called by the monitor when a source is quarantined: tell the
+    # bootstrap server so that every sender routes around that peer.
+    def report_quarantine(self, source, reason):
+        if source.startswith("ip:"):
+            return
+
+        response = bootstrap_request(
+            sign_request(
+                {
+                    "action": "report",
+                    "peer_id": self.peer_id,
+                    "suspect": source,
+                    "reason": reason,
+                    "freshness": new_freshness(),
+                },
+                self.identity,
+            ),
+            self.bootstrap_address,
+        )
+        self.log(f"{self.peer_id} reported {source} to the bootstrap server")
+        return response
 
     # Forward an authenticated message and return its acknowledgement.
     def forward_routed_message(
@@ -488,6 +591,10 @@ class RoutedPeer:
             raise ValueError("No next hop available")
 
         next_hop = route[current_index + 1]
+
+        # Never forward to a peer this peer has quarantined.
+        if self.monitor.is_quarantined(next_hop):
+            raise ValueError(f"Next hop {next_hop} is quarantined")
 
         # Check the overlay links.
         if not self._has_link(next_hop):
@@ -721,7 +828,7 @@ class RoutedPeer:
                     tag,
                     freshness,
                     signature,
-                ) = self.receive_routed_message(connection)
+                ) = self.receive_routed_message(connection, address)
 
                 self.log(
                     f"Authenticated routed message: "
@@ -741,6 +848,12 @@ class RoutedPeer:
                 # Send the authenticated acknowledgement
                 # back to the previous peer unchanged.
                 connection.sendall(acknowledgement)
+
+            except DecryptionError as error:
+                # Content that the destination cannot decrypt.
+                source = self.message_source(route, self.ip_source(address))
+                self.monitor.record(source, "bad_encryption", str(error))
+                self.log(f"Message processing failed: {error}")
 
             except (
                 ValueError,
@@ -792,6 +905,11 @@ def send_routed_message(
     trust_store = load_trust_store(keys_dir)
 
     peers = get_topology(bootstrap_address)
+
+    # Never route through peers that have been reported as quarantined.
+    excluded = set(excluded or ()) | {
+        peer["peer_id"] for peer in peers if peer.get("quarantined")
+    }
 
     if route is None:
         route = shortest_path(build_graph(peers), sender, destination, excluded)
@@ -939,7 +1057,8 @@ def show_topology(bootstrap_address=BOOTSTRAP_ADDRESS):
         peer_id = peer["peer_id"]
         links = ", ".join(sorted(graph[peer_id])) or "none"
 
-        print(f"{peer_id}  {peer['host']}:{peer['port']}")
+        flag = "  (QUARANTINED)" if peer.get("quarantined") else ""
+        print(f"{peer_id}  {peer['host']}:{peer['port']}{flag}")
         print(f"  links: {links}")
 
         for destination, next_hop in build_routing_table(graph, peer_id).items():
