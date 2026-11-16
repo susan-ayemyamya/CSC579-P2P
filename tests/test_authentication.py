@@ -18,6 +18,7 @@ import unittest
 from src import config
 from src.bootstrap import BootstrapServer
 from src.filesharing import canonical_file_metadata, receive_file, send_file
+from src.encryption import encrypt_content, message_context
 from src.identity import (
     TRUST_FILE,
     AuthenticationError,
@@ -41,8 +42,12 @@ KEY = config.SECRET_KEY
 
 
 # Build a routed message with a valid HMAC, signed by 'signer' (or unsigned).
-def routed_line(sender, destination, content, route, signer=None):
+# With a recipient key, the content is encrypted for the destination.
+def routed_line(sender, destination, content, route, signer=None, recipient_key=None):
     freshness = new_freshness()
+    if recipient_key is not None:
+        content = encrypt_content(content, recipient_key,
+                                  message_context(sender, destination, freshness["msg_id"]))
     original = canonical_routed_message(sender, destination, content, route, freshness)
     tag = calculate_hmac(original, KEY)
     signature = signer.sign(original) if signer else None
@@ -300,7 +305,8 @@ class TestLiveAuthentication(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
 
     def test_correctly_signed_raw_message_delivered(self):
-        reply = send_raw(self.address_a, routed_line("A", "C", "ok", self.route, self.ids["A"]))
+        reply = send_raw(self.address_a, routed_line(
+            "A", "C", "ok", self.route, self.ids["A"], self.trust.encryption_key("C")))
         self.assertTrue(reply)
 
     def test_impersonation_rejected(self):

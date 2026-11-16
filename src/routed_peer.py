@@ -69,6 +69,14 @@ Modifications (branch overlay-improvements) ---
        a signature proves exactly which peer sent it, so one peer can
        no longer pretend to be another, and unknown peers cannot join.
 
+   14. (branch encryption) The sender encrypts the message content for
+       the destination (encrypt_content with the destination's public
+       encryption key); only the destination decrypts it. Files are
+       encrypted for the peer that requested them.
+       Why: before, every peer on the route (and anyone watching the
+       network) could read the content. Now hops forward ciphertext
+       they cannot read.
+
 '''
 
 import argparse
@@ -91,6 +99,7 @@ from src.message import (
 from src.security import calculate_hmac, verify_hmac
 from src.replay import ReplayGuard, ReplayError, new_freshness
 from src.identity import load_identity, load_trust_store, sign_request
+from src.encryption import decrypt_content, encrypt_content, message_context
 from src.routing import build_graph, build_routing_table, shortest_path
 from src.filesharing import receive_file, send_file
 
@@ -422,6 +431,9 @@ class RoutedPeer:
 
         # Check whether this peer is the destination.
         if current_peer == destination:
+            # Only the destination can decrypt the content.
+            content = self.decrypt_message(sender, destination, content, freshness)
+
             self.log(f"\nMessage delivered to {current_peer}!")
             self.log(f"Original sender: {sender}")
 
@@ -496,6 +508,7 @@ class RoutedPeer:
             f"{current_peer} forwarding message "
             f"to {next_hop} ({next_host}:{next_port})"
         )
+        self.log(f"{current_peer} cannot read the content (encrypted end to end)")
 
         # Forward the original authenticated message.
         with socket.create_connection(
@@ -535,6 +548,22 @@ class RoutedPeer:
     # ------------------------------------------------------------
     # File sharing
     # ------------------------------------------------------------
+
+    # Decrypt the content of a message that reached this peer.
+    #   1. The content must be an encrypted box (plain text is refused).
+    #   2. Decrypt with this peer's private encryption key; the sender,
+    #      destination and msg_id must match what was encrypted.
+    def decrypt_message(self, sender, destination, content, freshness):
+        if self.identity.encryption_key is None:
+            raise ValueError(
+                f"No encryption key for {self.peer_id}. Run: python -m src.identity setup"
+            )
+
+        return decrypt_content(
+            content,
+            self.identity.encryption_key,
+            message_context(sender, destination, freshness["msg_id"]),
+        )
 
     # Process a file request and send the requested file to its sender.
     def handle_file_request(self, sender, content):
@@ -581,6 +610,7 @@ class RoutedPeer:
             requester["file_port"],
             shared_file_path,
             identity=self.identity,
+            recipient_key=self.trust_store.encryption_key(sender),
         )
 
         self.log(f"File successfully sent to {sender}!")
@@ -733,6 +763,7 @@ class RoutedPeer:
                     self.received_folder,
                     replay_guard=self.replay_guard,
                     trust_store=self.trust_store,
+                    decryption_key=self.identity.encryption_key,
                 )
 
                 self.log("\nFile received successfully!")
@@ -770,6 +801,13 @@ def send_routed_message(
 
     # New msg_id, nonce and timestamp for this message.
     freshness = new_freshness()
+
+    # Encrypt the content so only the destination can read it.
+    content = encrypt_content(
+        content,
+        trust_store.encryption_key(destination),
+        message_context(sender, destination, freshness["msg_id"]),
+    )
 
     # Create the original message bytes.
     original_bytes = canonical_routed_message(
