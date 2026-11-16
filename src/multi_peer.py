@@ -4,6 +4,12 @@ Modifications (branch overlay-improvements)
       Why: the key was copied in four files. Keeping it in one place
       means Step 4 (per-peer keys) only has to change config.py.
 
+   2. (branch peer-authentication) register_peer() signs the
+      registration with the peer's own private key and adds freshness
+      fields.
+      Why: the bootstrap server now only accepts signed registrations
+      from trusted peers, so this demo must sign too.
+
 Everything else in this file is unchanged.
 
 '''
@@ -21,6 +27,8 @@ from src.message import (
     decode_secure_message,
 )
 from src.security import calculate_hmac, verify_hmac
+from src.identity import load_identity, sign_request
+from src.replay import new_freshness
 from src import config
 
 # Network configuration
@@ -75,12 +83,16 @@ def bootstrap_request(request):
 
 def register_peer(peer_id, port):
     """Register this peer's listening address."""
-    response = bootstrap_request({
+    # The registration is signed with this peer's own private key.
+    request = sign_request({
         "action": "register",
         "peer_id": peer_id,
         "host": ADVERTISED_HOST,
         "port": port,
-    })
+        "freshness": new_freshness(),
+    }, load_identity(peer_id))
+
+    response = bootstrap_request(request)
 
     print(f"{peer_id} registered at {ADVERTISED_HOST}:{port}")
     return response

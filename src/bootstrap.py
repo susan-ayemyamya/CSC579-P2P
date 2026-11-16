@@ -19,13 +19,21 @@ Modifications (branch overlay-improvements)
 
    5. Host, port and limits come from src/config.py.
 
+   6. (branch peer-authentication) A registration is accepted only if
+      it is signed by a peer in the trusted list and is fresh
+      (_authenticate_registration). Others get "Unauthorized peer".
+      Why: before, anyone could join the overlay under any name. This
+      is the join control (TruChord's gateway check before joining).
+
 '''
 import json
 import socket
 import threading
 
 from src import config
+from src.identity import AuthenticationError, load_trust_store, verify_request
 from src.peer_directory import PeerDirectory
+from src.replay import ReplayError, ReplayGuard
 
 HOST = config.BOOTSTRAP_BIND
 PORT = config.BOOTSTRAP_PORT
@@ -34,7 +42,7 @@ MAX_MESSAGE_SIZE = config.MAX_MESSAGE_SIZE
 
 # Bootstrap server for peer registration and discovery.
 class BootstrapServer:
-    def __init__(self, host=HOST, port=PORT, verbose=True):
+    def __init__(self, host=HOST, port=PORT, verbose=True, keys_dir=None):
         self.host = host
         self.port = port
         self.verbose = verbose
@@ -42,12 +50,24 @@ class BootstrapServer:
         self.directory = PeerDirectory()
         self.directory_lock = threading.Lock()
 
+        # Only peers in the trusted list may register.
+        self.trust_store = load_trust_store(keys_dir)
+        self.replay_guard = ReplayGuard()
+
         self._server = None
         self._running = threading.Event()
 
     def log(self, text):
         if self.verbose:
             print(text)
+
+    # Check that a registration really comes from a trusted peer.
+    #   1. The signature must be valid for the peer named in the request.
+    #   2. The request must be fresh (not replayed, not too old).
+    # Raises AuthenticationError or ReplayError otherwise.
+    def _authenticate_registration(self, request):
+        verify_request(request, self.trust_store)
+        self.replay_guard.check(request.get("freshness"))
 
     # Apply one bootstrap request and return the response.
     def process_request(self, request, address=None):
@@ -63,6 +83,13 @@ class BootstrapServer:
         if action == "register":
             peer_host = request.get("host")
             peer_port = request.get("port")
+
+            # Join control: unknown or forged registrations are refused.
+            try:
+                self._authenticate_registration(request)
+            except (AuthenticationError, ReplayError) as error:
+                self.log(f"Rejected registration of {peer_id} from {address}: {error}")
+                return {"status": "error", "message": f"Unauthorized peer: {error}"}
 
             with self.directory_lock:
                 self.directory.register(
@@ -188,7 +215,13 @@ class BootstrapServer:
 
 # Command-line entry point: run the server on the configured port.
 def start_bootstrap():
-    BootstrapServer().serve_forever()
+    try:
+        server = BootstrapServer()
+    except AuthenticationError as error:
+        print(f"Error: {error}")
+        return
+
+    server.serve_forever()
 
 
 if __name__ == "__main__":

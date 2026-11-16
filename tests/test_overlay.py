@@ -17,6 +17,7 @@ import time
 import unittest
 
 from src.bootstrap import BootstrapServer
+from src.identity import generate_keys
 from src.peer_directory import PeerDirectory
 from src.routed_peer import (
     RoutedPeer,
@@ -108,8 +109,12 @@ class TestLiveOverlay(unittest.TestCase):
         with open(os.path.join(cls.shared, "notes.txt"), "wb") as file:
             file.write(b"overlay test file\n")
 
+        # Every test peer gets its own key pair in a temporary folder.
+        cls.keys_dir = os.path.join(cls.work_dir, "keys")
+        generate_keys(["A", "B", "C", "D", "E"], cls.keys_dir)
+
         cls.bootstrap = BootstrapServer(
-            host="127.0.0.1", port=0, verbose=False
+            host="127.0.0.1", port=0, verbose=False, keys_dir=cls.keys_dir
         ).start()
         cls.bootstrap_address = ("127.0.0.1", cls.bootstrap.port)
 
@@ -137,6 +142,7 @@ class TestLiveOverlay(unittest.TestCase):
                 shared_folder=cls.shared,
                 received_folder=os.path.join(cls.work_dir, "recv", peer_id),
                 verbose=False,
+                keys_dir=cls.keys_dir,
             ).start()
 
     @classmethod
@@ -152,6 +158,7 @@ class TestLiveOverlay(unittest.TestCase):
             sender, destination, content,
             bootstrap_address=self.bootstrap_address,
             verbose=False,
+            keys_dir=self.keys_dir,
             **options,
         )
 
@@ -188,6 +195,7 @@ class TestLiveOverlay(unittest.TestCase):
             owner="E",
             bootstrap_address=self.bootstrap_address,
             verbose=False,
+            keys_dir=self.keys_dir,
         )
 
         received = os.path.join(self.work_dir, "recv", "A", "notes.txt")

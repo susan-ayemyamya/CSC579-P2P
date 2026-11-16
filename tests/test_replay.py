@@ -18,6 +18,7 @@ import unittest
 
 from src import config
 from src.bootstrap import BootstrapServer
+from src.identity import generate_keys, load_identity, load_trust_store
 from src.filesharing import receive_file, send_file
 from src.message import (
     canonical_routed_message,
@@ -45,10 +46,14 @@ class FakeClock:
 
 
 # Build a valid, signed routed message with the given freshness fields.
-def signed_message(sender, destination, content, route, freshness):
+# With an identity, it is also signed with that peer's private key.
+def signed_message(sender, destination, content, route, freshness, identity=None):
     original = canonical_routed_message(sender, destination, content, route, freshness)
     tag = calculate_hmac(original, KEY)
-    return encode_secure_routed_message(sender, destination, content, route, tag, freshness)
+    signature = identity.sign(original) if identity else None
+    return encode_secure_routed_message(
+        sender, destination, content, route, tag, freshness, signature
+    )
 
 
 # Send raw bytes to a peer and return its one-line reply (b"" if none).
@@ -224,7 +229,16 @@ class TestLiveReplay(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.work_dir = tempfile.mkdtemp()
-        cls.bootstrap = BootstrapServer(host="127.0.0.1", port=0, verbose=False).start()
+
+        # Keys for the test peers; A's key is used to build captured messages.
+        cls.keys_dir = os.path.join(cls.work_dir, "keys")
+        generate_keys(["A", "B", "C"], cls.keys_dir)
+        cls.identity_a = load_identity("A", cls.keys_dir)
+        cls.trust = load_trust_store(cls.keys_dir)
+
+        cls.bootstrap = BootstrapServer(
+            host="127.0.0.1", port=0, verbose=False, keys_dir=cls.keys_dir
+        ).start()
         cls.bootstrap_address = ("127.0.0.1", cls.bootstrap.port)
 
         cls.peers = {}
@@ -241,6 +255,7 @@ class TestLiveReplay(unittest.TestCase):
                 shared_folder=cls.work_dir,
                 received_folder=os.path.join(cls.work_dir, "recv", peer_id),
                 verbose=False,
+                keys_dir=cls.keys_dir,
             ).start()
 
         cls.address_a = ("127.0.0.1", cls.peers["A"].port)
@@ -254,13 +269,15 @@ class TestLiveReplay(unittest.TestCase):
 
     def test_normal_message_still_delivered(self):
         result = send_routed_message(
-            "A", "C", "hello", bootstrap_address=self.bootstrap_address, verbose=False
+            "A", "C", "hello", bootstrap_address=self.bootstrap_address,
+            verbose=False, keys_dir=self.keys_dir,
         )
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(result["msg_id"]), 32)
 
     def test_replayed_message_rejected(self):
-        line = signed_message("A", "C", "pay 10", ["A", "B", "C"], new_freshness())
+        line = signed_message("A", "C", "pay 10", ["A", "B", "C"], new_freshness(),
+                              self.identity_a)
 
         first = send_raw(self.address_a, line)
         second = send_raw(self.address_a, line)
@@ -272,27 +289,31 @@ class TestLiveReplay(unittest.TestCase):
         freshness = new_freshness()
         freshness["timestamp"] -= 120_000  # two minutes old
 
-        reply = send_raw(self.address_a, signed_message("A", "C", "old", ["A", "B", "C"], freshness))
+        reply = send_raw(self.address_a, signed_message(
+            "A", "C", "old", ["A", "B", "C"], freshness, self.identity_a))
         self.assertEqual(reply, b"")
 
     def test_replayed_ack_rejected(self):
         freshness = new_freshness()
-        ack = send_raw(self.address_a, signed_message("A", "C", "x", ["A", "B", "C"], freshness))
+        ack = send_raw(self.address_a, signed_message(
+            "A", "C", "x", ["A", "B", "C"], freshness, self.identity_a))
 
         guard = ReplayGuard()
-        verify_acknowledgement(ack, "A", "C", freshness["msg_id"], guard)
+        verify_acknowledgement(ack, "A", "C", freshness["msg_id"], guard, self.trust)
 
         # The same ACK shown a second time is a replay.
         with self.assertRaises(ReplayError):
-            verify_acknowledgement(ack, "A", "C", freshness["msg_id"], guard)
+            verify_acknowledgement(ack, "A", "C", freshness["msg_id"], guard, self.trust)
 
     def test_ack_for_another_message_rejected(self):
         first = new_freshness()
-        ack = send_raw(self.address_a, signed_message("A", "C", "one", ["A", "B", "C"], first))
+        ack = send_raw(self.address_a, signed_message(
+            "A", "C", "one", ["A", "B", "C"], first, self.identity_a))
 
         # An old ACK cannot confirm a new message.
         with self.assertRaises(ReplayError):
-            verify_acknowledgement(ack, "A", "C", new_freshness()["msg_id"], ReplayGuard())
+            verify_acknowledgement(ack, "A", "C", new_freshness()["msg_id"],
+                                   ReplayGuard(), self.trust)
 
 
 if __name__ == "__main__":

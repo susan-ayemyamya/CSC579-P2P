@@ -10,6 +10,13 @@ Modifications (branch replay-protection)
       fields and return them.
       Why: secure peers must refuse messages without replay protection.
 
+   3. (branch peer-authentication) The encode functions take an optional
+      'signature' (the sender's Ed25519 signature), and decoding with
+      with_freshness=True also returns it.
+      Why: the HMAC only proves the sender knows the shared key; the
+      signature proves which peer sent it, so peers cannot impersonate
+      each other.
+
    Without the new arguments every function behaves exactly as before.
 '''
 
@@ -133,7 +140,7 @@ def canonical_routed_message(sender, destination, content, route, freshness=None
 
 
 def encode_secure_routed_message(
-    sender, destination, content, route, tag, freshness=None
+    sender, destination, content, route, tag, freshness=None, signature=None
 ):
     """Package a routed message and its HMAC tag as one JSON line."""
 
@@ -146,6 +153,10 @@ def encode_secure_routed_message(
 
     envelope = json.loads(original_bytes.decode("utf-8"))
     envelope["tag"] = tag
+
+    # The sender's signature travels next to the HMAC tag.
+    if signature is not None:
+        envelope["signature"] = signature
 
     return json.dumps(envelope).encode("utf-8") + b"\n"
 
@@ -178,7 +189,8 @@ def decode_secure_routed_message(data, with_freshness=False):
 
     if with_freshness:
         return (sender, destination, content, route, tag,
-                original_bytes, validate_freshness(freshness))
+                original_bytes, validate_freshness(freshness),
+                envelope.get("signature"))
 
     return sender, destination, content, route, tag, original_bytes
 
@@ -213,7 +225,7 @@ def canonical_acknowledgement(status, sender, destination, freshness=None):
 
 
 def encode_secure_acknowledgement(
-    status, sender, destination, tag, freshness=None
+    status, sender, destination, tag, freshness=None, signature=None
 ):
     """Package an acknowledgement and its HMAC tag."""
 
@@ -229,6 +241,10 @@ def encode_secure_acknowledgement(
     )
 
     acknowledgement["tag"] = tag
+
+    # The destination's signature proves who confirmed delivery.
+    if signature is not None:
+        acknowledgement["signature"] = signature
 
     return json.dumps(acknowledgement).encode("utf-8") + b"\n"
 
@@ -260,6 +276,7 @@ def decode_secure_acknowledgement(data, with_freshness=False):
 
     if with_freshness:
         return (status, sender, destination, tag,
-                original_bytes, validate_freshness(freshness))
+                original_bytes, validate_freshness(freshness),
+                acknowledgement.get("signature"))
 
     return status, sender, destination, tag, original_bytes

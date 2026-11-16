@@ -1,65 +1,75 @@
-# --- Modifications (branch overlay-improvements) ---
-#   1. Hosts, ports and the key come from src/config.py.
-#      Why: the file was fixed to 127.0.0.1; now the routed demo and
-#      file sharing can run across machines (Windows <-> Kali).
-#
-#   2. A peer is now a RoutedPeer class. The original functions became
-#      methods with their logic and comments kept (register_peer,
-#      discover_peers, receive_routed_message, forward_routed_message,
-#      handle_file_request, start_peer).
-#      Why: global variables allowed only Peer A, B or C. A class lets
-#      many peers run, also inside one process for the attack tests and
-#      the simulation.
-#
-#   3. Peer addresses and file ports come from the bootstrap server
-#      (get_topology) instead of PEER_ADDRESSES / FILE_TRANSFER_PORTS.
-#      Why: discovery is really used, and any number of peers can join.
-#
-#   4. In forward_routed_message() the routing-table check became an
-#      overlay-link check (_has_link).
-#      Why: routes may now avoid a peer (quarantine), so a hop checks
-#      that the next hop is a real neighbour instead of the usual one.
-#      A route that jumps over a missing link is still refused.
-#
-#   5. Each connection is handled in its own thread with a socket
-#      timeout (_start_accept_loop).
-#      Why: the old loop handled one connection at a time, so one silent
-#      or flooding client froze the whole peer. The flooding tests in
-#      Step 7 need the peer to keep working.
-#
-#   6. send_routed_message() computes the route when none is given,
-#      can avoid peers ('excluded' / --avoid), and returns RTT and hops.
-#      Why: needed for quarantine (Step 6) and evaluation (Step 9).
-#
-#   7. Acknowledgement reading and checking moved into
-#      read_acknowledgement() and verify_acknowledgement().
-#      Why: the same code appeared twice; Step 3 (replay protection)
-#      can now extend it in one place.
-#
-#   8. Command line uses argparse. The original commands (server, send,
-#      request-file) work the same; new options: --port, --neighbours,
-#      --from, --to, --message, --route, --avoid and 'topology'.
-#      Why: to start extra peers and to show the overlay in the demo.
-#
-#   9. Peer A, B and C keep their original ports and A -> B -> C links
-#      by default (config.DEFAULT_NEIGHBOURS).
-#      Why: the original demo commands give the same output as before.
-#
-#   10. (branch replay-protection) Every routed message carries signed
-#       freshness fields (msg_id, nonce, timestamp); each peer checks
-#       them with its ReplayGuard in receive_routed_message().
-#       Why: a captured message could otherwise be sent again later and
-#       would still pass the HMAC check.
-#
-#   11. (branch replay-protection) The ACK repeats the msg_id of its
-#       message with its own nonce, and verify_acknowledgement() checks
-#       the msg_id and the replay guard.
-#       Why: an old 'ok' ACK must not confirm a new message.
-#
-#   12. (branch replay-protection) File transfers received by a peer are
-#       checked with the same replay guard.
-#       Why: a captured file transfer could otherwise be replayed.
-# ----------------------------------------------------
+'''
+Modifications (branch overlay-improvements) ---
+   1. Hosts, ports and the key come from src/config.py.
+      Why: the file was fixed to 127.0.0.1; now the routed demo and
+      file sharing can run across machines (Windows <-> Kali).
+
+   2. A peer is now a RoutedPeer class. The original functions became
+      methods with their logic and comments kept (register_peer,
+      discover_peers, receive_routed_message, forward_routed_message,
+      handle_file_request, start_peer).
+      Why: global variables allowed only Peer A, B or C. A class lets
+      many peers run, also inside one process for the attack tests and
+      the simulation.
+
+   3. Peer addresses and file ports come from the bootstrap server
+      (get_topology) instead of PEER_ADDRESSES / FILE_TRANSFER_PORTS.
+      Why: discovery is really used, and any number of peers can join.
+
+   4. In forward_routed_message() the routing-table check became an
+      overlay-link check (_has_link).
+      Why: routes may now avoid a peer (quarantine), so a hop checks
+      that the next hop is a real neighbour instead of the usual one.
+      A route that jumps over a missing link is still refused.
+
+   5. Each connection is handled in its own thread with a socket
+      timeout (_start_accept_loop).
+      Why: the old loop handled one connection at a time, so one silent
+      or flooding client froze the whole peer. The flooding tests in
+      Step 7 need the peer to keep working.
+
+   6. send_routed_message() computes the route when none is given,
+      can avoid peers ('excluded' / --avoid), and returns RTT and hops.
+      Why: needed for quarantine (Step 6) and evaluation (Step 9).
+
+   7. Acknowledgement reading and checking moved into
+      read_acknowledgement() and verify_acknowledgement().
+      Why: the same code appeared twice; Step 3 (replay protection)
+      can now extend it in one place.
+
+   8. Command line uses argparse. The original commands (server, send,
+      request-file) work the same; new options: --port, --neighbours,
+      --from, --to, --message, --route, --avoid and 'topology'.
+      Why: to start extra peers and to show the overlay in the demo.
+
+   9. Peer A, B and C keep their original ports and A -> B -> C links
+      by default (config.DEFAULT_NEIGHBOURS).
+      Why: the original demo commands give the same output as before.
+
+   10. (branch replay-protection) Every routed message carries signed
+       freshness fields (msg_id, nonce, timestamp); each peer checks
+       them with its ReplayGuard in receive_routed_message().
+       Why: a captured message could otherwise be sent again later and
+       would still pass the HMAC check.
+
+   11. (branch replay-protection) The ACK repeats the msg_id of its
+       message with its own nonce, and verify_acknowledgement() checks
+       the msg_id and the replay guard.
+       Why: an old 'ok' ACK must not confirm a new message.
+
+   12. (branch replay-protection) File transfers received by a peer are
+       checked with the same replay guard.
+       Why: a captured file transfer could otherwise be replayed.
+
+   13. (branch peer-authentication) Each peer loads its own private key
+       and the trusted public keys (keys folder). It signs every
+       message, acknowledgement, file transfer and its registration,
+       and checks the signatures it receives.
+       Why: the shared HMAC key only proves "someone in the network";
+       a signature proves exactly which peer sent it, so one peer can
+       no longer pretend to be another, and unknown peers cannot join.
+
+'''
 
 import argparse
 import json
@@ -80,6 +90,7 @@ from src.message import (
 
 from src.security import calculate_hmac, verify_hmac
 from src.replay import ReplayGuard, ReplayError, new_freshness
+from src.identity import load_identity, load_trust_store, sign_request
 from src.routing import build_graph, build_routing_table, shortest_path
 from src.filesharing import receive_file, send_file
 
@@ -165,9 +176,10 @@ def read_acknowledgement(stream):
 
 
 # Verify an acknowledgement and check that it matches the message.
-# The ACK must repeat the msg_id of the message it confirms and must
-# pass the replay guard (fresh timestamp, nonce not seen before).
-def verify_acknowledgement(data, sender, destination, msg_id, replay_guard):
+# The ACK must repeat the msg_id of the message it confirms, must pass
+# the replay guard, and must be signed by the destination peer.
+def verify_acknowledgement(data, sender, destination, msg_id, replay_guard,
+                           trust_store):
     # Decode the authenticated acknowledgement.
     (
         status,
@@ -176,6 +188,7 @@ def verify_acknowledgement(data, sender, destination, msg_id, replay_guard):
         ack_tag,
         ack_original_bytes,
         ack_freshness,
+        ack_signature,
     ) = decode_secure_acknowledgement(data[:-1], with_freshness=True)
 
     # Verify the acknowledgement's HMAC.
@@ -185,6 +198,9 @@ def verify_acknowledgement(data, sender, destination, msg_id, replay_guard):
         ack_tag,
     ):
         raise ValueError("Acknowledgement HMAC verification failed")
+
+    # Only the destination peer can sign a valid acknowledgement.
+    trust_store.verify(destination, ack_original_bytes, ack_signature)
 
     # Confirm that the acknowledgement matches the original message.
     if (
@@ -222,6 +238,7 @@ class RoutedPeer:
         shared_folder="shared_files",
         received_folder=None,
         verbose=True,
+        keys_dir=None,
     ):
         if not isinstance(peer_id, str) or not peer_id.strip():
             raise ValueError("Unknown peer ID")
@@ -262,6 +279,10 @@ class RoutedPeer:
         # Remembers recent nonces so replayed messages are rejected.
         self.replay_guard = ReplayGuard()
 
+        # This peer's own private key and the trusted public keys.
+        self.identity = load_identity(peer_id, keys_dir)
+        self.trust_store = load_trust_store(keys_dir)
+
         self._running = threading.Event()
         self._servers = []
 
@@ -275,7 +296,9 @@ class RoutedPeer:
 
     # Register this peer with the bootstrap server.
     def register_peer(self):
-        response = bootstrap_request(
+        # The registration is fresh and signed with this peer's key,
+        # so the bootstrap server can check it really is this peer.
+        request = sign_request(
             {
                 "action": "register",
                 "peer_id": self.peer_id,
@@ -283,9 +306,12 @@ class RoutedPeer:
                 "port": self.port,
                 "file_port": self.file_port,
                 "neighbours": self.neighbours,
+                "freshness": new_freshness(),
             },
-            self.bootstrap_address,
+            self.identity,
         )
+
+        response = bootstrap_request(request, self.bootstrap_address)
 
         self.log(
             f"{self.peer_id} registered at "
@@ -366,16 +392,20 @@ class RoutedPeer:
             tag,
             original_bytes,
             freshness,
+            signature,
         ) = decode_secure_routed_message(data[:-1], with_freshness=True)
 
         if not verify_hmac(original_bytes, SECRET_KEY, tag):
             raise ValueError("HMAC verification failed")
 
+        # The message must be signed by the peer named as its sender.
+        self.trust_store.verify(sender, original_bytes, signature)
+
         # Check freshness only after the HMAC passed, so forged messages
         # cannot fill the nonce memory.
         self.replay_guard.check(freshness)
 
-        return sender, destination, content, route, tag, freshness
+        return sender, destination, content, route, tag, freshness, signature
 
     # Forward an authenticated message and return its acknowledgement.
     def forward_routed_message(
@@ -386,6 +416,7 @@ class RoutedPeer:
         route,
         tag,
         freshness,
+        signature,
     ):
         current_peer = self.peer_id
 
@@ -422,13 +453,14 @@ class RoutedPeer:
                 SECRET_KEY,
             )
 
-            # Return the authenticated acknowledgement.
+            # Return the authenticated and signed acknowledgement.
             return encode_secure_acknowledgement(
                 "ok",
                 sender,
                 destination,
                 ack_tag,
                 ack_freshness,
+                self.identity.sign(ack_bytes),
             )
 
         # Find this peer's position in the route.
@@ -478,6 +510,7 @@ class RoutedPeer:
                 route,
                 tag,
                 freshness,
+                signature,
             )
 
             connection.sendall(forwarded_message)
@@ -488,7 +521,7 @@ class RoutedPeer:
 
             verify_acknowledgement(
                 data, sender, destination,
-                freshness["msg_id"], self.replay_guard,
+                freshness["msg_id"], self.replay_guard, self.trust_store,
             )
 
             self.log(
@@ -547,6 +580,7 @@ class RoutedPeer:
             requester["host"],
             requester["file_port"],
             shared_file_path,
+            identity=self.identity,
         )
 
         self.log(f"File successfully sent to {sender}!")
@@ -656,6 +690,7 @@ class RoutedPeer:
                     route,
                     tag,
                     freshness,
+                    signature,
                 ) = self.receive_routed_message(connection)
 
                 self.log(
@@ -670,6 +705,7 @@ class RoutedPeer:
                     route,
                     tag,
                     freshness,
+                    signature,
                 )
 
                 # Send the authenticated acknowledgement
@@ -696,6 +732,7 @@ class RoutedPeer:
                     connection,
                     self.received_folder,
                     replay_guard=self.replay_guard,
+                    trust_store=self.trust_store,
                 )
 
                 self.log("\nFile received successfully!")
@@ -717,7 +754,12 @@ def send_routed_message(
     excluded=None,
     bootstrap_address=BOOTSTRAP_ADDRESS,
     verbose=True,
+    keys_dir=None,
 ):
+    # The message is signed with the sender's own private key.
+    identity = load_identity(sender, keys_dir)
+    trust_store = load_trust_store(keys_dir)
+
     peers = get_topology(bootstrap_address)
 
     if route is None:
@@ -741,6 +783,9 @@ def send_routed_message(
     # Generate the HMAC authentication tag.
     tag = calculate_hmac(original_bytes, SECRET_KEY)
 
+    # Sign the same bytes with the sender's private key.
+    signature = identity.sign(original_bytes)
+
     # Find the sender's network address.
     sender_peer = find_peer(peers, sender)
 
@@ -763,6 +808,7 @@ def send_routed_message(
             route,
             tag,
             freshness,
+            signature,
         )
 
         start_time = time.perf_counter()
@@ -779,7 +825,8 @@ def send_routed_message(
 
     # The ACK must carry this message's msg_id and be fresh.
     status, ack_sender, ack_destination = verify_acknowledgement(
-        data, sender, destination, freshness["msg_id"], ReplayGuard()
+        data, sender, destination, freshness["msg_id"], ReplayGuard(),
+        trust_store,
     )
 
     rtt_ms = (end_time - start_time) * 1000
@@ -811,6 +858,7 @@ def request_file(
     owner="Peer C",
     bootstrap_address=BOOTSTRAP_ADDRESS,
     verbose=True,
+    keys_dir=None,
 ):
     if (
         not isinstance(filename, str)
@@ -838,6 +886,7 @@ def request_file(
         content=content,
         bootstrap_address=bootstrap_address,
         verbose=verbose,
+        keys_dir=keys_dir,
     )
 
 

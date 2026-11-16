@@ -9,6 +9,12 @@ Modifications (branch overlay-improvements)
       replay_guard is given (peers always pass one).
       Why: a captured file transfer could otherwise be sent again.
 
+   3. (branch peer-authentication) send_file() can sign the metadata
+      with the sending peer's private key (identity), and receive_file()
+      checks that signature when a trust_store is given (peers always
+      pass one).
+      Why: the receiver can be sure which peer really sent the file.
+
 Everything else in this file is unchanged.
 
 '''
@@ -84,7 +90,8 @@ def receive_file_data(stream, file_size, destination_path):
     return received
 
 
-def receive_file(connection, destination_folder, replay_guard=None):
+def receive_file(connection, destination_folder, replay_guard=None,
+                 trust_store=None):
     """Receive a file and verify its HMAC and SHA-256 hash."""
 
     with connection.makefile("rb") as stream:
@@ -131,6 +138,14 @@ def receive_file(connection, destination_folder, replay_guard=None):
         # replay guard; the signed metadata carries the freshness fields.
         if replay_guard is not None:
             replay_guard.check(metadata.get("freshness"))
+
+        # Check which peer really sent the file (its signature).
+        if trust_store is not None:
+            trust_store.verify(
+                metadata.get("sender"),
+                original_bytes,
+                envelope.get("signature"),
+            )
 
         # Extract metadata only after successful authentication.
         filename = metadata.get("filename")
@@ -195,7 +210,7 @@ def receive_file(connection, destination_folder, replay_guard=None):
         "status": "verified",
     }
 
-def send_file(host, port, file_path):
+def send_file(host, port, file_path, identity=None):
     """Send a file with HMAC-authenticated metadata."""
 
     metadata = get_file_metadata(file_path)
@@ -205,6 +220,10 @@ def send_file(host, port, file_path):
 
     # Add msg_id, nonce and timestamp so the transfer cannot be replayed.
     metadata["freshness"] = new_freshness()
+
+    # Name the sending peer; it is covered by the signature below.
+    if identity is not None:
+        metadata["sender"] = identity.peer_id
 
     # Create canonical metadata bytes.
     original_bytes = canonical_file_metadata(metadata)
@@ -217,6 +236,10 @@ def send_file(host, port, file_path):
         "metadata": metadata,
         "tag": tag,
     }
+
+    # The sending peer signs the metadata with its private key.
+    if identity is not None:
+        envelope["signature"] = identity.sign(original_bytes)
 
     with socket.create_connection(
         (host, port),

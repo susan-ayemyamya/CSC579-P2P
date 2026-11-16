@@ -1,10 +1,11 @@
-# --- Modifications (branch overlay-improvements) ---
-#   1. SECRET_KEY now comes from src/config.py instead of a local copy.
-#      Why: the key was copied in four files. Keeping it in one place
-#      means Step 4 (per-peer keys) only has to change config.py.
-#
-#   Everything else in this file is unchanged.
-# ----------------------------------------------------
+'''
+Modifications (branch overlay-improvements)
+   1. SECRET_KEY now comes from src/config.py instead of a local copy.
+      Why: the key was copied in four files. Keeping it in one place
+      means Step 4 (per-peer keys) only has to change config.py.
+
+   Everything else in this file is unchanged.
+'''
 
 import socket
 import os
