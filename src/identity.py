@@ -1,10 +1,12 @@
 """
 New file: per-peer identity (peer authentication).
 
-Each peer has its own Ed25519 key pair:
-  - the private key stays with that peer only (keys/<Peer_ID>.key)
-  - the public key is listed in keys/trusted_peers.json, which every
-    peer and the bootstrap server use to check signatures
+Each peer has its own key pairs:
+  - an Ed25519 key for signing (peer authentication, Step 4)
+  - an X25519 key for encryption (Step 5)
+The private keys stay with that peer only (keys/<Peer_ID>.key); the
+public keys are listed in keys/trusted_peers.json, which every peer and
+the bootstrap server use to check signatures and to encrypt for a peer.
 
 A peer signs what it sends. Because nobody else has its private key,
 no other peer can create a valid signature in its name. Only peers in
@@ -24,6 +26,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
 
 from src import config
 
@@ -42,12 +48,41 @@ def _key_file(peer_id):
     return peer_id.replace(" ", "_") + ".key"
 
 
+# Read a private key file. Step 4 files hold only the signing key as
+# hex; newer files hold JSON with both keys. Returns (signing, encryption)
+# where encryption is None for an old file.
+def _read_key_file(key_path):
+    with open(key_path, encoding="utf-8") as file:
+        text = file.read().strip()
+
+    if text.startswith("{"):
+        keys = json.loads(text)
+        signing = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(keys["sign"]))
+        encryption = None
+        if keys.get("encrypt"):
+            encryption = X25519PrivateKey.from_private_bytes(bytes.fromhex(keys["encrypt"]))
+        return signing, encryption
+
+    return Ed25519PrivateKey.from_private_bytes(bytes.fromhex(text)), None
+
+
+# Write both private keys of a peer to its key file.
+def _write_key_file(key_path, signing, encryption):
+    with open(key_path, "w", encoding="utf-8") as file:
+        json.dump({
+            "sign": signing.private_bytes_raw().hex(),
+            "encrypt": encryption.private_bytes_raw().hex(),
+        }, file)
+
+
 # Create key pairs for the given peers and add their public keys to the
-# trusted list. Existing keys are kept, so running it again is safe.
+# trusted list. Existing keys are kept, so running it again is safe; a
+# key file from Step 4 (signing key only) gets an encryption key added.
 #   1. Load the current trusted list (if any).
-#   2. For each peer without a private key file, create a new key pair.
-#   3. Save the private key file and add the public key to the list.
+#   2. For each peer: create both keys, or add the missing encryption key.
+#   3. Save the private key file and put both public keys in the list.
 #   4. Write the trusted list back to disk.
+# Returns {peer_id: "created" / "upgraded" / "already existed"}.
 def generate_keys(peer_ids, keys_dir=None):
     keys_dir = keys_dir or config.KEYS_DIR
     os.makedirs(keys_dir, exist_ok=True)
@@ -59,33 +94,43 @@ def generate_keys(peer_ids, keys_dir=None):
         with open(trust_path, encoding="utf-8") as file:
             trusted = json.load(file)
 
-    created = []
+    result = {}
 
     for peer_id in peer_ids:
         key_path = os.path.join(keys_dir, _key_file(peer_id))
 
         if os.path.isfile(key_path):
-            private_key = load_identity(peer_id, keys_dir).private_key
-        else:
-            private_key = Ed25519PrivateKey.generate()
-            with open(key_path, "w", encoding="utf-8") as file:
-                file.write(private_key.private_bytes_raw().hex())
-            created.append(peer_id)
+            signing, encryption = _read_key_file(key_path)
+            result[peer_id] = "already existed"
 
-        trusted[peer_id] = private_key.public_key().public_bytes_raw().hex()
+            if encryption is None:
+                encryption = X25519PrivateKey.generate()
+                _write_key_file(key_path, signing, encryption)
+                result[peer_id] = "upgraded"
+        else:
+            signing = Ed25519PrivateKey.generate()
+            encryption = X25519PrivateKey.generate()
+            _write_key_file(key_path, signing, encryption)
+            result[peer_id] = "created"
+
+        trusted[peer_id] = {
+            "sign": signing.public_key().public_bytes_raw().hex(),
+            "encrypt": encryption.public_key().public_bytes_raw().hex(),
+        }
 
     with open(trust_path, "w", encoding="utf-8") as file:
         json.dump(trusted, file, indent=2, sort_keys=True)
 
-    return created
+    return result
 
 
-# The identity of one peer: its ID and its private key.
+# The identity of one peer: its ID, its signing key and its encryption key.
 class Identity:
 
-    def __init__(self, peer_id, private_key):
+    def __init__(self, peer_id, private_key, encryption_key=None):
         self.peer_id = peer_id
         self.private_key = private_key
+        self.encryption_key = encryption_key
 
     # Sign some bytes and return the signature as hex.
     def sign(self, data):
@@ -103,20 +148,29 @@ def load_identity(peer_id, keys_dir=None):
             f"Run: python -m src.identity setup \"{peer_id}\""
         )
 
-    with open(key_path, encoding="utf-8") as file:
-        raw = bytes.fromhex(file.read().strip())
-
-    return Identity(peer_id, Ed25519PrivateKey.from_private_bytes(raw))
+    signing, encryption = _read_key_file(key_path)
+    return Identity(peer_id, signing, encryption)
 
 
 # The list of trusted peers and their public keys.
 class TrustStore:
 
+    # Accepts the Step 4 format (peer -> signing key) and the new format
+    # (peer -> {"sign": ..., "encrypt": ...}).
     def __init__(self, public_keys):
-        self._keys = {
-            peer_id: Ed25519PublicKey.from_public_bytes(bytes.fromhex(key_hex))
-            for peer_id, key_hex in public_keys.items()
-        }
+        self._keys = {}
+        self._encryption_keys = {}
+
+        for peer_id, entry in public_keys.items():
+            if isinstance(entry, str):
+                entry = {"sign": entry}
+
+            self._keys[peer_id] = Ed25519PublicKey.from_public_bytes(
+                bytes.fromhex(entry["sign"]))
+
+            if entry.get("encrypt"):
+                self._encryption_keys[peer_id] = X25519PublicKey.from_public_bytes(
+                    bytes.fromhex(entry["encrypt"]))
 
     # Is this peer allowed in the overlay?
     def is_trusted(self, peer_id):
@@ -144,6 +198,17 @@ class TrustStore:
     # Peer IDs in the trusted list.
     def peers(self):
         return sorted(self._keys)
+
+    # The public encryption key of a trusted peer (used to encrypt for it).
+    def encryption_key(self, peer_id):
+        key = self._encryption_keys.get(peer_id)
+
+        if key is None:
+            raise AuthenticationError(
+                f"No encryption key for {peer_id}. Run: python -m src.identity setup"
+            )
+
+        return key
 
 
 # Load the trusted list from the keys folder.
@@ -192,11 +257,10 @@ def main(argv=None):
 
     if args and args[0] == "setup":
         peer_ids = args[1:] or DEFAULT_PEERS
-        created = generate_keys(peer_ids)
+        result = generate_keys(peer_ids)
         print(f"Keys folder: {os.path.abspath(config.KEYS_DIR)}")
         for peer_id in peer_ids:
-            state = "created" if peer_id in created else "already existed"
-            print(f"  {peer_id}: {state}")
+            print(f"  {peer_id}: {result[peer_id]}")
 
     elif args and args[0] == "list":
         store = load_trust_store()
