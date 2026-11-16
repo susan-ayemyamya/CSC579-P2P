@@ -4,6 +4,11 @@ Modifications (branch overlay-improvements)
       Why: the key was copied in four files. Keeping it in one place
       means Step 4 (per-peer keys) only has to change config.py.
 
+   2. (branch replay-protection) send_file() adds signed freshness fields (msg_id, nonce, timestamp)
+      to the file metadata, and receive_file() checks them when a
+      replay_guard is given (peers always pass one).
+      Why: a captured file transfer could otherwise be sent again.
+
 Everything else in this file is unchanged.
 
 '''
@@ -14,6 +19,7 @@ import json
 import socket
 
 from src.security import calculate_hmac, verify_hmac
+from src.replay import new_freshness
 from src import config
 
 CHUNK_SIZE = 4096
@@ -78,7 +84,7 @@ def receive_file_data(stream, file_size, destination_path):
     return received
 
 
-def receive_file(connection, destination_folder):
+def receive_file(connection, destination_folder, replay_guard=None):
     """Receive a file and verify its HMAC and SHA-256 hash."""
 
     with connection.makefile("rb") as stream:
@@ -120,6 +126,11 @@ def receive_file(connection, destination_folder):
             received_tag
         ):
             raise ValueError("File metadata authentication failed")
+
+        # Reject a replayed or stale file transfer. Peers pass their
+        # replay guard; the signed metadata carries the freshness fields.
+        if replay_guard is not None:
+            replay_guard.check(metadata.get("freshness"))
 
         # Extract metadata only after successful authentication.
         filename = metadata.get("filename")
@@ -191,6 +202,9 @@ def send_file(host, port, file_path):
 
     if metadata["file_size"] > MAX_FILE_SIZE:
         raise ValueError("File size exceeds the 10 MB limit")
+
+    # Add msg_id, nonce and timestamp so the transfer cannot be replayed.
+    metadata["freshness"] = new_freshness()
 
     # Create canonical metadata bytes.
     original_bytes = canonical_file_metadata(metadata)

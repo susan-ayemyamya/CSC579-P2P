@@ -1,4 +1,21 @@
+'''
+Modifications (branch replay-protection)
+   1. Routed messages and acknowledgements can carry signed freshness
+      fields (msg_id, nonce, timestamp) through a new optional
+      'freshness' argument.
+      Why: without them, a captured message or ACK could be sent again
+      later and would still pass the HMAC check (replay attack).
+
+   2. The decode functions take with_freshness=True to require these
+      fields and return them.
+      Why: secure peers must refuse messages without replay protection.
+
+   Without the new arguments every function behaves exactly as before.
+'''
+
 import json
+
+from src.replay import validate_freshness
 
 
 def encode_message(sender, content):
@@ -67,7 +84,7 @@ def decode_secure_message(data):
     return sender, content, tag, original_bytes
 
 
-def canonical_routed_message(sender, destination, content, route):
+def canonical_routed_message(sender, destination, content, route, freshness=None):
     """Create consistent bytes for authenticating a routed message."""
 
     if not isinstance(sender, str) or not sender.strip():
@@ -104,6 +121,10 @@ def canonical_routed_message(sender, destination, content, route):
         "route": route,
     }
 
+    # The freshness fields (msg_id, nonce, timestamp) are signed too.
+    if freshness is not None:
+        message["freshness"] = validate_freshness(freshness)
+
     return json.dumps(
         message,
         sort_keys=True,
@@ -112,12 +133,12 @@ def canonical_routed_message(sender, destination, content, route):
 
 
 def encode_secure_routed_message(
-    sender, destination, content, route, tag
+    sender, destination, content, route, tag, freshness=None
 ):
     """Package a routed message and its HMAC tag as one JSON line."""
 
     original_bytes = canonical_routed_message(
-        sender, destination, content, route
+        sender, destination, content, route, freshness
     )
 
     if not isinstance(tag, str) or len(tag) != 64:
@@ -129,7 +150,7 @@ def encode_secure_routed_message(
     return json.dumps(envelope).encode("utf-8") + b"\n"
 
 
-def decode_secure_routed_message(data):
+def decode_secure_routed_message(data, with_freshness=False):
     """Decode and validate a secure routed message."""
 
     envelope = json.loads(data.decode("utf-8"))
@@ -142,18 +163,27 @@ def decode_secure_routed_message(data):
     content = envelope.get("content")
     route = envelope.get("route")
     tag = envelope.get("tag")
+    freshness = envelope.get("freshness")
 
     if not isinstance(tag, str) or len(tag) != 64:
         raise ValueError("Invalid HMAC tag")
 
+    # Secure peers require the freshness fields.
+    if with_freshness and freshness is None:
+        raise ValueError("Message has no replay protection fields")
+
     original_bytes = canonical_routed_message(
-        sender, destination, content, route
+        sender, destination, content, route, freshness
     )
+
+    if with_freshness:
+        return (sender, destination, content, route, tag,
+                original_bytes, validate_freshness(freshness))
 
     return sender, destination, content, route, tag, original_bytes
 
 
-def canonical_acknowledgement(status, sender, destination):
+def canonical_acknowledgement(status, sender, destination, freshness=None):
     """Create consistent bytes for authenticating a delivery acknowledgement."""
 
     if not isinstance(status, str) or not status.strip():
@@ -171,6 +201,10 @@ def canonical_acknowledgement(status, sender, destination):
         "destination": destination,
     }
 
+    # The ACK's freshness carries the msg_id of the message it confirms.
+    if freshness is not None:
+        acknowledgement["freshness"] = validate_freshness(freshness)
+
     return json.dumps(
         acknowledgement,
         sort_keys=True,
@@ -179,12 +213,12 @@ def canonical_acknowledgement(status, sender, destination):
 
 
 def encode_secure_acknowledgement(
-    status, sender, destination, tag
+    status, sender, destination, tag, freshness=None
 ):
     """Package an acknowledgement and its HMAC tag."""
 
     original_bytes = canonical_acknowledgement(
-        status, sender, destination
+        status, sender, destination, freshness
     )
 
     if not isinstance(tag, str) or len(tag) != 64:
@@ -199,7 +233,7 @@ def encode_secure_acknowledgement(
     return json.dumps(acknowledgement).encode("utf-8") + b"\n"
 
 
-def decode_secure_acknowledgement(data):
+def decode_secure_acknowledgement(data, with_freshness=False):
     """Decode a secure acknowledgement and return its verification data."""
 
     acknowledgement = json.loads(data.decode("utf-8"))
@@ -211,12 +245,21 @@ def decode_secure_acknowledgement(data):
     sender = acknowledgement.get("sender")
     destination = acknowledgement.get("destination")
     tag = acknowledgement.get("tag")
+    freshness = acknowledgement.get("freshness")
 
     if not isinstance(tag, str) or len(tag) != 64:
         raise ValueError("Invalid HMAC tag")
 
+    # Secure peers require the freshness fields.
+    if with_freshness and freshness is None:
+        raise ValueError("Acknowledgement has no replay protection fields")
+
     original_bytes = canonical_acknowledgement(
-        status, sender, destination
+        status, sender, destination, freshness
     )
+
+    if with_freshness:
+        return (status, sender, destination, tag,
+                original_bytes, validate_freshness(freshness))
 
     return status, sender, destination, tag, original_bytes

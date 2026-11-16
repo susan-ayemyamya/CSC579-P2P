@@ -44,6 +44,21 @@
 #   9. Peer A, B and C keep their original ports and A -> B -> C links
 #      by default (config.DEFAULT_NEIGHBOURS).
 #      Why: the original demo commands give the same output as before.
+#
+#   10. (branch replay-protection) Every routed message carries signed
+#       freshness fields (msg_id, nonce, timestamp); each peer checks
+#       them with its ReplayGuard in receive_routed_message().
+#       Why: a captured message could otherwise be sent again later and
+#       would still pass the HMAC check.
+#
+#   11. (branch replay-protection) The ACK repeats the msg_id of its
+#       message with its own nonce, and verify_acknowledgement() checks
+#       the msg_id and the replay guard.
+#       Why: an old 'ok' ACK must not confirm a new message.
+#
+#   12. (branch replay-protection) File transfers received by a peer are
+#       checked with the same replay guard.
+#       Why: a captured file transfer could otherwise be replayed.
 # ----------------------------------------------------
 
 import argparse
@@ -64,6 +79,7 @@ from src.message import (
 )
 
 from src.security import calculate_hmac, verify_hmac
+from src.replay import ReplayGuard, ReplayError, new_freshness
 from src.routing import build_graph, build_routing_table, shortest_path
 from src.filesharing import receive_file, send_file
 
@@ -149,7 +165,9 @@ def read_acknowledgement(stream):
 
 
 # Verify an acknowledgement and check that it matches the message.
-def verify_acknowledgement(data, sender, destination):
+# The ACK must repeat the msg_id of the message it confirms and must
+# pass the replay guard (fresh timestamp, nonce not seen before).
+def verify_acknowledgement(data, sender, destination, msg_id, replay_guard):
     # Decode the authenticated acknowledgement.
     (
         status,
@@ -157,7 +175,8 @@ def verify_acknowledgement(data, sender, destination):
         ack_destination,
         ack_tag,
         ack_original_bytes,
-    ) = decode_secure_acknowledgement(data[:-1])
+        ack_freshness,
+    ) = decode_secure_acknowledgement(data[:-1], with_freshness=True)
 
     # Verify the acknowledgement's HMAC.
     if not verify_hmac(
@@ -176,6 +195,13 @@ def verify_acknowledgement(data, sender, destination):
         raise ValueError(
             "Acknowledgement does not match routed message"
         )
+
+    # Confirm the ACK belongs to this exact message, not an older one.
+    if ack_freshness["msg_id"] != msg_id:
+        raise ReplayError("Acknowledgement is for a different message")
+
+    # Reject a replayed or stale acknowledgement.
+    replay_guard.check(ack_freshness)
 
     return status, ack_sender, ack_destination
 
@@ -232,6 +258,9 @@ class RoutedPeer:
         self._lock = threading.Lock()
         self.peers = []
         self.graph = {}
+
+        # Remembers recent nonces so replayed messages are rejected.
+        self.replay_guard = ReplayGuard()
 
         self._running = threading.Event()
         self._servers = []
@@ -316,7 +345,8 @@ class RoutedPeer:
     # Routed messages
     # ------------------------------------------------------------
 
-    # Receive and authenticate one routed message.
+    # Receive and authenticate one routed message, then check that it is
+    # fresh (not replayed, not too old) before it is processed.
     def receive_routed_message(self, connection):
         with connection.makefile("rb") as stream:
             data = stream.readline(MAX_MESSAGE_SIZE + 1)
@@ -335,12 +365,17 @@ class RoutedPeer:
             route,
             tag,
             original_bytes,
-        ) = decode_secure_routed_message(data[:-1])
+            freshness,
+        ) = decode_secure_routed_message(data[:-1], with_freshness=True)
 
         if not verify_hmac(original_bytes, SECRET_KEY, tag):
             raise ValueError("HMAC verification failed")
 
-        return sender, destination, content, route, tag
+        # Check freshness only after the HMAC passed, so forged messages
+        # cannot fill the nonce memory.
+        self.replay_guard.check(freshness)
+
+        return sender, destination, content, route, tag, freshness
 
     # Forward an authenticated message and return its acknowledgement.
     def forward_routed_message(
@@ -350,6 +385,7 @@ class RoutedPeer:
         content,
         route,
         tag,
+        freshness,
     ):
         current_peer = self.peer_id
 
@@ -369,11 +405,15 @@ class RoutedPeer:
             else:
                 self.log(f"Message content: {content}")
 
+            # The ACK repeats this message's msg_id with its own nonce.
+            ack_freshness = new_freshness(msg_id=freshness["msg_id"])
+
             # Create the acknowledgement's original data.
             ack_bytes = canonical_acknowledgement(
                 "ok",
                 sender,
                 destination,
+                ack_freshness,
             )
 
             # Generate an HMAC authentication tag.
@@ -388,6 +428,7 @@ class RoutedPeer:
                 sender,
                 destination,
                 ack_tag,
+                ack_freshness,
             )
 
         # Find this peer's position in the route.
@@ -436,6 +477,7 @@ class RoutedPeer:
                 content,
                 route,
                 tag,
+                freshness,
             )
 
             connection.sendall(forwarded_message)
@@ -444,7 +486,10 @@ class RoutedPeer:
             with connection.makefile("rb") as stream:
                 data = read_acknowledgement(stream)
 
-            verify_acknowledgement(data, sender, destination)
+            verify_acknowledgement(
+                data, sender, destination,
+                freshness["msg_id"], self.replay_guard,
+            )
 
             self.log(
                 f"{current_peer} verified acknowledgement "
@@ -610,6 +655,7 @@ class RoutedPeer:
                     content,
                     route,
                     tag,
+                    freshness,
                 ) = self.receive_routed_message(connection)
 
                 self.log(
@@ -623,6 +669,7 @@ class RoutedPeer:
                     content,
                     route,
                     tag,
+                    freshness,
                 )
 
                 # Send the authenticated acknowledgement
@@ -648,6 +695,7 @@ class RoutedPeer:
                 result = receive_file(
                     connection,
                     self.received_folder,
+                    replay_guard=self.replay_guard,
                 )
 
                 self.log("\nFile received successfully!")
@@ -678,12 +726,16 @@ def send_routed_message(
         if route is None:
             raise RuntimeError(f"No route from {sender} to {destination}")
 
+    # New msg_id, nonce and timestamp for this message.
+    freshness = new_freshness()
+
     # Create the original message bytes.
     original_bytes = canonical_routed_message(
         sender,
         destination,
         content,
         route,
+        freshness,
     )
 
     # Generate the HMAC authentication tag.
@@ -710,6 +762,7 @@ def send_routed_message(
             content,
             route,
             tag,
+            freshness,
         )
 
         start_time = time.perf_counter()
@@ -724,8 +777,9 @@ def send_routed_message(
 
         end_time = time.perf_counter()
 
+    # The ACK must carry this message's msg_id and be fresh.
     status, ack_sender, ack_destination = verify_acknowledgement(
-        data, sender, destination
+        data, sender, destination, freshness["msg_id"], ReplayGuard()
     )
 
     rtt_ms = (end_time - start_time) * 1000
@@ -746,6 +800,7 @@ def send_routed_message(
         "route": route,
         "hops": len(route) - 1,
         "rtt_ms": rtt_ms,
+        "msg_id": freshness["msg_id"],
     }
 
 

@@ -55,6 +55,10 @@ MAX_MESSAGE_SIZE = 4096
 # blocks the peer forever
 SOCKET_TIMEOUT = _env_float("P2P_SOCKET_TIMEOUT", 5.0)
 
+# Replay protection: a message older or newer than this many seconds is
+# rejected. Peer clocks must be roughly correct (automatic time is enough).
+REPLAY_WINDOW = _env_float("P2P_REPLAY_WINDOW", 30.0)
+
 # Default ports for the original three-peer demonstration.
 DEFAULT_PEER_PORTS = {
     "Peer A": 5000,
