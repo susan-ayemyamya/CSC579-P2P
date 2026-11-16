@@ -63,6 +63,37 @@ REPLAY_WINDOW = _env_float("P2P_REPLAY_WINDOW", 30.0)
 # of trusted public keys (created with: python -m src.identity setup).
 KEYS_DIR = os.getenv("P2P_KEYS_DIR", "keys")
 
+# Security monitor: every peer starts with trust 1.0; each bad event
+# lowers it. A peer below TRUST_THRESHOLD is quarantined. Old events
+# count less over time: a penalty is multiplied by TRUST_DECAY once per
+# DECAY_PERIOD seconds.
+TRUST_THRESHOLD = _env_float("P2P_TRUST_THRESHOLD", 0.6)
+TRUST_DECAY = _env_float("P2P_TRUST_DECAY", 0.9)
+DECAY_PERIOD = _env_float("P2P_DECAY_PERIOD", 10.0)
+
+# How much each kind of bad event lowers the trust score.
+PENALTIES = {
+    "bad_hmac": 0.2,
+    "bad_signature": 0.3,
+    "replay": 0.3,
+    "bad_encryption": 0.2,
+    "malformed": 0.1,
+    "flood": 0.3,
+    "unauthorized_join": 0.5,
+}
+
+# Flood detection: messages per second from one source above
+# mean + 3 standard deviations of its normal rate (and at least
+# FLOOD_MIN_RATE) count as a flood.
+FLOOD_MIN_RATE = _env_int("P2P_FLOOD_MIN_RATE", 20)
+
+# Reports from peers needed before the bootstrap server marks a peer as
+# quarantined for the whole overlay.
+REPORTS_TO_QUARANTINE = _env_int("P2P_REPORTS_TO_QUARANTINE", 1)
+
+# Folder for the security alert logs.
+ALERTS_DIR = os.getenv("P2P_ALERTS_DIR", "alerts")
+
 # Default ports for the original three-peer demonstration.
 DEFAULT_PEER_PORTS = {
     "Peer A": 5000,

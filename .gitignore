@@ -8,3 +8,6 @@ received_files/
 
 # Private keys must never be committed
 keys/
+
+# Security alert logs (created while peers run)
+alerts/
