@@ -8,7 +8,8 @@ attacker must also be quarantined and avoided.
 
 import unittest
 
-from attacks import fake_registration, impersonation, unauthorized_peer
+from attacks import (fake_registration, flooding, impersonation, replay_attack,
+                     tampering, unauthorized_peer)
 from attacks.lab import AttackLab
 
 
@@ -32,6 +33,21 @@ class TestIdentityAttacks(AttackTestCase):
 
     def test_impersonation(self):
         result = self.run_attack(impersonation)
+        self.assertIn("quarantined", result.response)
+
+
+class TestMessageAttacks(AttackTestCase):
+
+    def test_tampering(self):
+        result = self.run_attack(tampering)
+        self.assertIn("quarantined", result.response)
+
+    def test_replay(self):
+        result = self.run_attack(replay_attack)
+        self.assertIn("quarantined", result.response)
+
+    def test_flooding(self):
+        result = self.run_attack(flooding)
         self.assertIn("quarantined", result.response)
 
 
