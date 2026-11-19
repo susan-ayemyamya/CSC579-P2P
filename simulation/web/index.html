@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P2P Overlay Simulation</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #667085; --line: #d9dde5;
+    --honest: #2a9d8f; --attacker: #e9a23b; --quarantined: #d64545; --false: #8e5cd9;
+    --route: #22a35a; --accent: #3a6df0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --card: #1b2029; --text: #e6e9ef; --muted: #98a2b3; --line: #2e3542;
+      --honest: #3cc0b0; --attacker: #f0b44f; --quarantined: #f06060; --false: #a77cf0;
+      --route: #3ccf7a; --accent: #6b93ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .badge { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+           background: var(--line); color: var(--text); }
+  .badge.attack { background: var(--quarantined); color: #fff; }
+  .badge.warm { background: var(--accent); color: #fff; }
+  .muted { color: var(--muted); }
+  .controls { display: flex; gap: 18px; align-items: center; flex-wrap: wrap;
+              padding: 12px 20px; background: var(--card); border-top: 1px solid var(--line);
+              border-bottom: 1px solid var(--line); }
+  .controls label { display: flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { width: 110px; }
+  .types { display: flex; gap: 10px; flex-wrap: wrap; }
+  button { border: 0; border-radius: 6px; padding: 7px 14px; font: inherit; font-weight: 600;
+           cursor: pointer; background: var(--accent); color: #fff; }
+  button.secondary { background: var(--line); color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; }
+  .switch { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .switch button { border-radius: 0; background: transparent; color: var(--text); padding: 5px 12px; }
+  .switch button.on { background: var(--accent); color: #fff; }
+  main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; padding: 16px 20px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+             margin: 0 0 10px; font-weight: 600; }
+  #network { width: 100%; aspect-ratio: 1 / 1; display: block; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .stat .v { font-size: 22px; font-weight: 600; }
+  .stat .l { font-size: 12px; color: var(--muted); }
+  .right { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  #chart { width: 100%; height: 170px; display: block; }
+  #alerts { font: 12px/1.5 Consolas, monospace; max-height: 230px; overflow-y: auto; margin: 0;
+            padding: 0; list-style: none; }
+  #alerts li { padding: 2px 0; border-bottom: 1px dashed var(--line); overflow-wrap: anywhere; }
+  #alerts li.q { color: var(--quarantined); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .error { color: var(--quarantined); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Secure P2P Overlay: Live Simulation</h1>
+  <span id="phase" class="badge">idle</span>
+  <span id="elapsed" class="muted"></span>
+  <span id="error" class="error"></span>
+</header>
+
+<div class="controls">
+  <label>Peers <input id="peers" type="range" min="6" max="50" value="12"><b id="peersV">12</b></label>
+  <label>Attackers <input id="ratio" type="range" min="0" max="40" step="5" value="25"><b id="ratioV">25%</b></label>
+  <span>Monitor
+    <span class="switch"><button id="monOn" class="on">ON</button><button id="monOff">OFF</button></span>
+  </span>
+  <span class="types" id="types"></span>
+  <button id="start">Start</button>
+  <button id="stop" class="secondary" disabled>Stop</button>
+  <a id="csv" href="/api/timeline.csv" class="muted">Download timeline CSV</a>
+</div>
+
+<main>
+  <section class="card">
+    <h2>Overlay network</h2>
+    <svg id="network" viewBox="0 0 600 600" role="img" aria-label="Overlay network"></svg>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--honest)"></span>Honest peer</span>
+      <span><span class="dot" style="background:var(--attacker)"></span>Attacker (not detected yet)</span>
+      <span><span class="dot" style="background:var(--quarantined)"></span>Quarantined attacker</span>
+      <span><span class="dot" style="background:var(--false)"></span>Honest peer quarantined (false positive)</span>
+      <span><span class="dot" style="background:var(--route)"></span>Delivered message route</span>
+    </div>
+  </section>
+
+  <div class="right">
+    <section class="card">
+      <h2>Results</h2>
+      <div class="stats" id="stats"></div>
+    </section>
+    <section class="card">
+      <h2>Delivery rate (last 5 s) and detections</h2>
+      <svg id="chart" viewBox="0 0 500 170" preserveAspectRatio="none"></svg>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--route)"></span>Delivery rate</span>
+        <span><span class="dot" style="background:var(--quarantined)"></span>Attacker quarantined</span>
+        <span><span class="dot" style="background:var(--line)"></span>Warm-up (no attacks)</span>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Attackers</h2>
+      <table><thead><tr><th>Peer</th><th>Attack</th><th>Trust</th><th>Status</th></tr></thead>
+        <tbody id="attackers"></tbody></table>
+    </section>
+    <section class="card">
+      <h2>Security alerts</h2>
+      <ul id="alerts"></ul>
+    </section>
+  </div>
+</main>
+
+<script>
+const ATTACKS = ["replay", "tamper", "impersonate", "flood", "on-off"];
+const NS = "http://www.w3.org/2000/svg";
+const $ = id => document.getElementById(id);
+let monitorOn = true;
+
+ATTACKS.forEach(a => {
+  const label = document.createElement("label");
+  label.innerHTML = `<input type="checkbox" value="${a}" checked> ${a}`;
+  $("types").appendChild(label);
+});
+$("peers").oninput = () => $("peersV").textContent = $("peers").value;
+$("ratio").oninput = () => $("ratioV").textContent = $("ratio").value + "%";
+$("monOn").onclick = () => setMonitor(true);
+$("monOff").onclick = () => setMonitor(false);
+function setMonitor(on) {
+  monitorOn = on;
+  $("monOn").classList.toggle("on", on);
+  $("monOff").classList.toggle("on", !on);
+}
+
+$("start").onclick = async () => {
+  $("error").textContent = "";
+  $("start").disabled = true;
+  $("start").textContent = "Starting...";
+  const types = [...document.querySelectorAll("#types input:checked")].map(i => i.value);
+  const response = await fetch("/api/start", {
+    method: "POST",
+    body: JSON.stringify({
+      peers: +$("peers").value, attacker_ratio: $("ratio").value / 100,
+      monitor_on: monitorOn, attack_types: types,
+    }),
+  });
+  if (!response.ok) $("error").textContent = (await response.json()).error;
+  $("start").textContent = "Start";
+  $("start").disabled = false;
+};
+$("stop").onclick = () => fetch("/api/stop", { method: "POST" });
+
+function el(tag, attrs, parent) {
+  const node = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+
+function drawNetwork(state) {
+  const svg = $("network");
+  svg.innerHTML = "";
+  const nodes = state.nodes || [];
+  const n = nodes.length;
+  if (!n) return;
+  const pos = {};
+  const radius = 250, r = n > 30 ? 9 : n > 15 ? 13 : 17;
+  nodes.forEach((node, i) => {
+    const angle = (2 * Math.PI * i) / n - Math.PI / 2;
+    pos[node.id] = [300 + radius * Math.cos(angle), 300 + radius * Math.sin(angle)];
+  });
+  const byId = Object.fromEntries(nodes.map(x => [x.id, x]));
+
+  for (const [a, b] of state.links) {
+    const cut = byId[a].quarantined || byId[b].quarantined;
+    el("line", { x1: pos[a][0], y1: pos[a][1], x2: pos[b][0], y2: pos[b][1],
+      stroke: cut ? "var(--quarantined)" : "var(--line)", "stroke-width": cut ? 1 : 1.5,
+      "stroke-dasharray": cut ? "4 4" : "", opacity: cut ? 0.5 : 1 }, svg);
+  }
+  for (const route of state.routes || []) {
+    el("polyline", { points: route.map(p => pos[p].join(",")).join(" "), fill: "none",
+      stroke: "var(--route)", "stroke-width": 4, "stroke-linecap": "round",
+      "stroke-linejoin": "round", opacity: 0.55 }, svg);
+  }
+  for (const node of nodes) {
+    const [x, y] = pos[node.id];
+    let fill = "var(--honest)";
+    if (node.quarantined) fill = node.attacker ? "var(--quarantined)" : "var(--false)";
+    else if (node.attacker) fill = "var(--attacker)";
+    const g = el("g", {}, svg);
+    el("circle", { cx: x, cy: y, r, fill, stroke: "var(--card)", "stroke-width": 2,
+      "stroke-dasharray": node.attacker && !node.quarantined ? "3 2" : "" }, g);
+    if (node.quarantined) {
+      const d = r * 0.5;
+      el("path", { d: `M${x-d},${y-d}L${x+d},${y+d}M${x+d},${y-d}L${x-d},${y+d}`,
+        stroke: "#fff", "stroke-width": 2.5, "stroke-linecap": "round" }, g);
+    }
+    const lx = 300 + (x - 300) * 1.12, ly = 300 + (y - 300) * 1.12;
+    const label = el("text", { x: lx, y: ly + 4, "text-anchor": "middle",
+      "font-size": n > 30 ? 10 : 12, fill: "var(--muted)" }, g);
+    label.textContent = node.id;
+    const title = el("title", {}, g);
+    title.textContent = `${node.id}${node.attacker ? " (attacker: " + node.attack + ")" : ""}\n`
+      + `trust ${node.trust.toFixed(2)}${node.quarantined ? "\nQUARANTINED" : ""}`;
+  }
+}
+
+function fmt(v, suffix = "") { return v === null || v === undefined ? "-" : v + suffix; }
+function pct(v) { return v === null || v === undefined ? "-" : Math.round(v * 100) + "%"; }
+
+function drawStats(s) {
+  const items = [
+    [pct(s.recent_delivery), "Delivery rate (last 5 s)"],
+    [pct(s.delivery_rate), `Delivered overall (${s.delivered}/${s.sent})`],
+    [`${s.detected}/${s.attackers}`, "Attackers detected"],
+    [fmt(s.mean_detection_s, " s"), "Mean detection time"],
+    [s.false_positives, "False positives"],
+    [fmt(s.avg_rtt_ms, " ms"), "Average RTT"],
+    [fmt(s.avg_hops), "Average hops"],
+    [s.attack_messages, "Attack messages sent"],
+    [s.dropped_by_attackers, "Messages dropped by attackers"],
+    [s.join_attempts, "Rejected joins (outsider)"],
+  ];
+  $("stats").innerHTML = items.map(([v, l]) =>
+    `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+}
+
+function drawChart(state) {
+  const svg = $("chart");
+  svg.innerHTML = "";
+  const rows = state.timeline || [];
+  const W = 500, H = 170, pad = 22;
+  const maxT = Math.max(30, ...rows.map(r => r.t));
+  const x = t => pad + (t / maxT) * (W - pad - 6);
+  const y = v => 8 + (1 - v) * (H - pad - 8);
+  el("rect", { x: x(0), y: 8, width: x(state.settings.warmup) - x(0), height: H - pad - 8,
+    fill: "var(--line)", opacity: 0.5 }, svg);
+  [0, 0.5, 1].forEach(v => {
+    el("line", { x1: pad, x2: W - 6, y1: y(v), y2: y(v), stroke: "var(--line)" }, svg);
+    el("text", { x: 2, y: y(v) + 4, "font-size": 10, fill: "var(--muted)" }, svg).textContent = v * 100 + "%";
+  });
+  el("text", { x: W - 6, y: H - 4, "text-anchor": "end", "font-size": 10, fill: "var(--muted)" }, svg)
+    .textContent = maxT + " s";
+  const points = rows.filter(r => r.recent_delivery !== null).map(r => `${x(r.t)},${y(r.recent_delivery)}`);
+  if (points.length) el("polyline", { points: points.join(" "), fill: "none", stroke: "var(--route)",
+    "stroke-width": 2.5, "vector-effect": "non-scaling-stroke" }, svg);
+  let last = 0;
+  for (const r of rows) {
+    if (r.attackers_detected > last) {
+      el("line", { x1: x(r.t), x2: x(r.t), y1: 8, y2: H - pad, stroke: "var(--quarantined)",
+        "stroke-dasharray": "3 3", "vector-effect": "non-scaling-stroke" }, svg);
+      last = r.attackers_detected;
+    }
+  }
+}
+
+function drawAttackers(state) {
+  const rows = (state.nodes || []).filter(n => n.attacker).map(n => {
+    const t = state.detections[n.id];
+    const status = n.quarantined ? `Quarantined${t !== undefined ? " after " + t + " s" : ""}`
+      : n.active ? (state.settings.monitor_on ? "Attacking" : "Attacking (monitor off)") : "Waiting";
+    return `<tr><td>${n.id}</td><td>${n.attack}</td><td>${n.trust.toFixed(2)}</td><td>${status}</td></tr>`;
+  });
+  $("attackers").innerHTML = rows.join("") || `<tr><td colspan="4" class="muted">No attackers</td></tr>`;
+}
+
+function drawAlerts(alerts) {
+  $("alerts").innerHTML = alerts.slice().reverse().map(a =>
+    `<li class="${a.includes("QUARANTINED") ? "q" : ""}">${a.replace(/</g, "&lt;")}</li>`).join("")
+    || `<li class="muted">No alerts yet</li>`;
+}
+
+// After a page reload, show the settings of the running simulation.
+let synced = false;
+function syncControls(s) {
+  synced = true;
+  $("peers").value = s.peers; $("peersV").textContent = s.peers;
+  const ratio = Math.round(s.attacker_ratio * 100);
+  $("ratio").value = ratio; $("ratioV").textContent = ratio + "%";
+  setMonitor(s.monitor_on);
+  document.querySelectorAll("#types input").forEach(i => i.checked = s.attack_types.includes(i.value));
+}
+
+async function poll() {
+  try {
+    const state = await (await fetch("/api/state")).json();
+    const phase = state.phase || "idle";
+    $("phase").textContent = phase;
+    $("phase").className = "badge" + (phase === "under attack" ? " attack" : phase === "warm-up" ? " warm" : "");
+    $("elapsed").textContent = state.elapsed ? `${state.elapsed} s` +
+      (state.settings ? ` | ${state.nodes.length} peers | monitor ${state.settings.monitor_on ? "on" : "off"}` : "") : "";
+    $("stop").disabled = !state.running;
+    if (state.settings && !synced) syncControls(state.settings);
+    if (state.nodes) {
+      drawNetwork(state);
+      drawStats(state.summary);
+      drawChart(state);
+      drawAttackers(state);
+      drawAlerts(state.alerts);
+    }
+  } catch (e) { /* server restarting */ }
+  setTimeout(poll, 700);
+}
+poll();
+</script>
+</body>
+</html>
