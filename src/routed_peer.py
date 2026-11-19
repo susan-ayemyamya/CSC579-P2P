@@ -88,6 +88,12 @@ Modifications (branch overlay-improvements) ---
        attacker could keep trying forever. The monitor detects repeated
        misbehaviour and responds to it (proposal: detection and response).
 
+   16. (branch simulation) bootstrap_request() accepts replies up to
+       config.MAX_DIRECTORY_SIZE (64 KB) instead of 4096 bytes.
+       Why: the peer list of an overlay with about 30 or more peers is
+       larger than 4096 bytes, so bigger overlays (the simulation runs
+       up to 50 peers) could not start. Peer messages keep the 4096 limit.
+
 '''
 
 import argparse
@@ -142,11 +148,11 @@ def bootstrap_request(request, bootstrap_address=BOOTSTRAP_ADDRESS):
         )
 
         with connection.makefile("rb") as stream:
-            data = stream.readline(MAX_MESSAGE_SIZE + 1)
+            data = stream.readline(config.MAX_DIRECTORY_SIZE + 1)
 
     if (
         not data
-        or len(data) > MAX_MESSAGE_SIZE
+        or len(data) > config.MAX_DIRECTORY_SIZE
         or not data.endswith(b"\n")
     ):
         raise RuntimeError("Invalid bootstrap response")

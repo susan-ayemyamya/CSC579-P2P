@@ -52,6 +52,10 @@ SECRET_KEY = os.getenv(
 # Message limits and socket behaviour.
 MAX_MESSAGE_SIZE = 4096
 
+# Peer lists from the bootstrap server grow with the overlay (about
+# 30 peers already fill 4096 bytes), so they get a larger limit.
+MAX_DIRECTORY_SIZE = _env_int("P2P_MAX_DIRECTORY_SIZE", 64 * 1024)
+
 # blocks the peer forever
 SOCKET_TIMEOUT = _env_float("P2P_SOCKET_TIMEOUT", 5.0)
 
