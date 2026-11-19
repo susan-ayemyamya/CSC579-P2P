@@ -12,6 +12,7 @@ import os
 import shutil
 import socket
 import tempfile
+import time
 import unittest
 
 from src import config
@@ -306,9 +307,13 @@ class TestLiveDetectionAndResponse(unittest.TestCase):
         self.assertEqual(self.to_d(self.message(["A", "B", "D"])), b"")
 
     def test_3_flood_is_detected(self):
-        # C suddenly forwards many messages to D within one second.
-        for _ in range(15):
-            self.to_d(self.message(["A", "C", "D"]))
+        # C suddenly forwards many messages to D within one second. The
+        # messages are built first and sent right after a new second
+        # starts, so the burst is not split across two seconds.
+        lines = [self.message(["A", "C", "D"]) for _ in range(15)]
+        time.sleep(1.0 - time.time() % 1.0 + 0.01)
+        for line in lines:
+            self.to_d(line)
         self.assertTrue(any("flood from C" in line for line in self.peers["D"].monitor.alerts))
 
 
